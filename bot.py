@@ -180,7 +180,8 @@ class QuizView(View):
             # 振り返りを送信
             review_messages = self.create_review_messages()
             for review_msg in review_messages:
-                await interaction.followup.send(review_msg)
+                #変更点：ephemeral=Trueを追加
+                await interaction.followup.send(review_msg,ephemeral=True)
     
     def create_result_message(self):
         # ( ... 変更なし ... )
