@@ -1,11 +1,20 @@
 import discord
 from discord import app_commands
 from discord.ui import Button, View
+import os  # osをインポート
+from aiohttp import web  # <-- 変更点: aiohttpをインポート
+
+# --- Render スリープ防止用 Webサーバー設定 ---
+async def health_check(request):
+    """
+    RenderやUptimeRobotからのヘルスチェックに応答する
+    """
+    return web.Response(text="Bot is running!")
+
+# -----------------------------------------------
 
 intents = discord.Intents.default()
 intents.message_content = True
-client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
 
 MY_GUILD = discord.Object(id=1432678542898102346)
 
@@ -19,7 +28,7 @@ QUESTIONS = [
     {
         "text": "問1: 「音楽の父」と呼ばれ、『G線上のアリア』や『ブランデンブルク協奏曲』などで知られるバロック時代の作曲家は誰でしょう？",
         "options": ["ヘンデル", "J.S.バッハ", "ヴィヴァルディ"],
-        "correct": 1
+        "correct": 1  # 正解は2番目の選択肢(0始まりなので1)
     },
     {
         "text": "問2: オペラ『魔笛』や『フィガロの結婚』、交響曲『ジュピター』などを作曲したオーストリアの天才作曲家は誰でしょう？",
@@ -118,6 +127,7 @@ QUESTIONS = [
     }
 ]
 
+# (QuizView クラスは変更なし: ご提示のコードをそのままコピー)
 class QuizView(View):
     def __init__(self, question_index, correct_count, user_answers):
         super().__init__(timeout=300)
@@ -136,7 +146,7 @@ class QuizView(View):
             self.add_item(button)
     
     async def button_callback(self, interaction: discord.Interaction):
-        # まず応答を延期(処理時間を確保)
+        # ( ... QuizViewの中身は変更なし ... )
         await interaction.response.defer()
         
         # 選択を記録
@@ -173,6 +183,7 @@ class QuizView(View):
                 await interaction.followup.send(review_msg)
     
     def create_result_message(self):
+        # ( ... 変更なし ... )
         total = len(QUESTIONS)
         score = self.correct_count
         percentage = int((score / total) * 100)
@@ -188,7 +199,7 @@ class QuizView(View):
             comment = "良い結果です!もう少し学ぶと更に楽しめますよ!"
         else:
             grade = "🎹 音楽入門者"
-            comment = "これから音楽史を学んでいきましょう!"
+            comment = "これから学ぶと更に楽しめますよ!"
         
         result = f"""
 ✨ **クイズ終了!** ✨
@@ -204,7 +215,7 @@ class QuizView(View):
         return result
     
     def create_review_messages(self):
-        """各問題の振り返りを生成(複数メッセージに分割)"""
+        # ( ... 変更なし ... )
         messages = []
         current_message = "📝 **振り返り**\n\n"
         
@@ -213,10 +224,7 @@ class QuizView(View):
             correct_answer = question["correct"]
             is_correct = user_answer == correct_answer
             
-            # 結果アイコン
             icon = "✅" if is_correct else "❌"
-            
-            # 問題番号と結果
             review_line = f"{icon} **問{i+1}**: "
             
             if is_correct:
@@ -228,27 +236,63 @@ class QuizView(View):
             
             review_line += "\n"
             
-            # メッセージが2000文字を超えそうなら分割
             if len(current_message + review_line) > 1900:
                 messages.append(current_message)
                 current_message = "📝 **振り返り(続き)**\n\n"
             
             current_message += review_line
         
-        # 最後のメッセージを追加
         if current_message:
             messages.append(current_message)
         
         return messages
 
 
+# --- 変更点: クライアントのセットアップ方法を変更 ---
+
+class MyClient(discord.Client):
+    """
+    setup_hookでWebサーバーとコマンド同期を管理するカスタムクライアント
+    """
+    def __init__(self, *, intents: discord.Intents):
+        super().__init__(intents=intents)
+        # treeをクライアントに紐付ける
+        self.tree = app_commands.CommandTree(self)
+
+    async def setup_hook(self):
+        # --- Webサーバーを起動する ---
+        app = web.Application()
+        app.router.add_get('/', health_check)  # ルートURL '/' でhealth_checkを実行
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        
+        # RenderはPORT環境変数を自動で提供します
+        # ローカルテスト用にデフォルトポート(例: 8080)を指定
+        port = int(os.environ.get("PORT", 8080))
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        print(f"--- Web server started on 0.0.0.0:{port} ---")
+        
+        # --- スラッシュコマンドを同期する ---
+        self.tree.copy_global_to(guild=MY_GUILD)
+        await self.tree.sync(guild=MY_GUILD)
+        print("--- Commands synced ---")
+
+# 以前の `client` と `tree` の定義をこちらに置き換え
+client = MyClient(intents=intents)
+tree = client.tree  # tree変数を client.tree で参照
+
+# -----------------------------------------------
+
+
 @client.event
 async def on_ready():
-    tree.copy_global_to(guild=MY_GUILD)
-    await tree.sync(guild=MY_GUILD)
-    print(f'{client.user} としてログインしました!')
-    print('コマンドを同期しました!')
+    # 変更点: コマンド同期は setup_hook に移動したため、ここではログイン表示のみ
+    print(f'--- {client.user} としてログインしました! ---')
 
+
+# @tree.command デコレータは、上で定義した `tree` 変数を使うので変更不要
 @tree.command(name="音楽史クイズ", description="音楽史に関する20問のクイズに挑戦!")
 async def quiz(interaction: discord.Interaction):
     # ★追加:チャンネルチェック
@@ -256,7 +300,7 @@ async def quiz(interaction: discord.Interaction):
         await interaction.response.send_message(
             "❌ このチャンネルではクイズを実行できません。\n"
             "#雑談・オフトピックチャンネル内で実行してください。",
-            ephemeral=True  # このメッセージは実行者にのみ表示
+            ephemeral=True
         )
         return
     
@@ -268,5 +312,6 @@ async def quiz(interaction: discord.Interaction):
         view=view
     )
 
-import os
+
+# .envファイルからトークンを読み込む (Render側では環境変数として設定)
 client.run(os.getenv('DISCORD_TOKEN'))
