@@ -1,38 +1,192 @@
-#メインファイル
-#Discordボットのエントリーポイント
-
+# メインファイル
+# Discordボットのエントリーポイント
+# (v4: 予測候補の削除 ＆ チャンネル名表示に対応)
 
 import discord
 from discord import app_commands
 import os
+from dotenv import load_dotenv 
 
-# 設定をインポート
-from config import MY_GUILD_ID
+from utils import sheets_loader  
+from utils.quiz_view import QuizView, QuizData 
 
-# 各クイズをインポート
-from quizzes import music_history
+load_dotenv()
+TOKEN = os.getenv('DISCORD_TOKEN')
+GUILD_ID = os.getenv('GUILD_ID') 
 
-# Discord設定
+if not TOKEN:
+    print("ERROR: DISCORD_TOKEN が .env ファイルに設定されていません。")
+    exit()
+
+MY_GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
+if MY_GUILD:
+    print(f"ターゲットサーバーID: {GUILD_ID} (テスト用)")
+else:
+    print("グローバルコマンドとして登録します (反映に時間がかかります)")
+
 intents = discord.Intents.default()
-intents.message_content = True
-client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
 
-MY_GUILD = discord.Object(id=MY_GUILD_ID)
 
+class MyClient(discord.Client):
+    def __init__(self, *, intents: discord.Intents):
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+
+    # 🔽 --- 修正 (v4): 予測候補を削除するため、ファクトリ関数パターンに変更 --- 🔽
+    def _create_quiz_callback(self, sheet_name: str, bot_title: str, allowed_channel_id: str):
+        """
+        コマンド実行時に呼ばれる「実際のコールバック関数」を
+        動的に生成するためのファクトリ（工場）関数。
+        """
+        
+        # この関数が Discord に 'callback' として登録される
+        async def _actual_callback(interaction: discord.Interaction):
+            # この関数は引数を持たないが、
+            # 外側の関数の変数 (sheet_nameなど) を記憶している (クロージャー)
+            await self.run_quiz_command(
+                interaction=interaction,
+                sheet_name=sheet_name,
+                bot_title=bot_title,
+                allowed_channel_id=allowed_channel_id
+            )
+        
+        # 作成したコールバック関数そのものを返す
+        return _actual_callback
+    # 🔼 --- 修正 (v4) --- 🔼
+
+
+    async def setup_hook(self):
+        print("[Bot] setup_hook: スプレッドシートからボットの登録を開始します...")
+        
+        bot_list = sheets_loader.get_bot_master_list()
+        
+        if not bot_list:
+            print("[Bot] ERROR: bot_master_list が読み込めません。処理を中断します。")
+            return
+
+        print(f"[Bot] {len(bot_list)} 件のボット設定を読み込みました。")
+
+        for bot_config in bot_list:
+            if str(bot_config.get('is_active')).upper() != 'TRUE':
+                print(f"[Bot] スキップ: {bot_config.get('bot_title')} (is_active=FALSE)")
+                continue
+
+            bot_type = bot_config.get('type')
+            
+            if bot_type == 'クイズ':
+                try:
+                    command_name = bot_config['command_name']
+                    bot_title = bot_config['bot_title']
+                    sheet_name = bot_config['sheet_questions']
+                    allowed_channel_id = str(bot_config.get('allowed_channel_id', ''))
+
+                    if not all([command_name, bot_title, sheet_name]):
+                        print(f"[Bot] ERROR: クイズ設定に不備があります: {bot_config}")
+                        continue
+                    
+                    # 🔽 --- 修正 (v4): ファクトリ関数を呼び出す --- 🔽
+                    final_callback = self._create_quiz_callback(
+                        sheet_name, 
+                        bot_title, 
+                        allowed_channel_id
+                    )
+                    # 🔼 --- 修正 (v4) --- 🔼
+                    
+                    self.tree.add_command(
+                        app_commands.Command(
+                            name=command_name,
+                            description=f"{bot_title} を開始します。",
+                            callback=final_callback # 引数を持たないコールバックを登録
+                        )
+                    )
+                    
+                    print(f"[Bot] 登録 [クイズ]: /{command_name} ({bot_title})")
+
+                except Exception as e:
+                    print(f"[Bot] ERROR: クイズの登録に失敗: {bot_config} | Error: {e}")
+
+            elif bot_type == '診断':
+                print(f"[Bot] スキップ (未実装): {bot_config.get('bot_title')} (診断)")
+                pass
+        
+        if MY_GUILD:
+            self.tree.copy_global_to(guild=MY_GUILD)
+            await self.tree.sync(guild=MY_GUILD)
+        else:
+            await self.tree.sync() 
+            
+        print("[Bot] setup_hook: コマンドの同期が完了しました。")
+
+    
+    async def run_quiz_command(self, interaction: discord.Interaction, sheet_name: str, bot_title: str, allowed_channel_id: str):
+        """
+        スプレッドシートからデータを読み込んでクイズを実行する共通関数
+        (v4: チャンネル名表示に対応)
+        """
+        try:
+            await interaction.response.defer() 
+
+            # 🔽 --- 修正 (v4): チャンネルIDチェックとメンション表示 --- 🔽
+            if allowed_channel_id and allowed_channel_id.strip() not in ['N/A', '0', '']:
+                allowed_channel_id_str = allowed_channel_id.strip()
+                if str(interaction.channel.id) != allowed_channel_id_str:
+                    
+                    # エラーメッセージを組み立てる
+                    error_message = f"このコマンド（`/ {interaction.command.name}`）は、このチャンネルでは実行できません。\n"
+                    
+                    try:
+                        # チャンネルID (文字列) を 整数 に変換
+                        channel_id_int = int(allowed_channel_id_str)
+                        # ボット (self) からチャンネルオブジェクトを取得
+                        target_channel = self.get_channel(channel_id_int) 
+                        
+                        if target_channel:
+                            # チャンネルが見つかったら、メンション ( <#123> ) を使う
+                            error_message += f"（{target_channel.mention} でお試しください）"
+                        else:
+                            # チャンネルが見つからない (IDが古い等)
+                            error_message += f"（指定されたチャンネルでお試しください）"
+                    except ValueError:
+                        # チャンネルIDが数字ではない (設定ミス)
+                        error_message += f"（指定されたチャンネルでお試しください）"
+
+                    await interaction.followup.send(error_message, ephemeral=True)
+                    return # 処理を中断
+            # 🔼 --- 修正 (v4) --- 🔼
+
+            questions_data = sheets_loader.get_quiz_data(sheet_name)
+            
+            if not questions_data:
+                await interaction.followup.send(f"エラー: クイズデータ（{sheet_name}）を読み込めませんでした。", ephemeral=True)
+                return
+                
+            try:
+                quiz_data_list = [QuizData(q) for q in questions_data]
+            except Exception as e:
+                await interaction.followup.send(f"エラー: クイズデータの形式が正しくありません。(sheet: {sheet_name}): {e}", ephemeral=True)
+                return
+
+            await interaction.followup.send(
+                f"**{interaction.user.mention} が「{bot_title}」に挑戦します！** 🎵\n"
+                f"*(クイズはあなた専用のメッセージで開始されます)*"
+            )
+
+            view = QuizView(quiz_data_list, bot_title)
+            await view.start(interaction)
+        
+        except Exception as e:
+            print(f"ERROR: run_quiz_command で予期せぬエラー: {e}")
+            if interaction.response.is_done():
+                await interaction.followup.send("予期せぬエラーが発生しました。", ephemeral=True)
+            else:
+                await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)
+
+
+client = MyClient(intents=intents)
 
 @client.event
 async def on_ready():
-    """ボット起動時の処理"""
-    tree.copy_global_to(guild=MY_GUILD)
-    await tree.sync(guild=MY_GUILD)
-    print(f'{client.user} としてログインしました!')
-    print('コマンドを同期しました!')
+    print(f'Logged in as {client.user} (ID: {client.user.id})')
+    print('------')
 
-
-# 各クイズのコマンドを登録
-music_history.register_commands(tree)
-
-
-# ボットを起動
-client.run(os.getenv('DISCORD_TOKEN'))
+client.run(TOKEN)
