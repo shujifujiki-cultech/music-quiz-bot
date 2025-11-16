@@ -6,11 +6,12 @@ import discord
 from discord import app_commands
 import os
 from dotenv import load_dotenv 
-
-# 🔽 --- 修正 (v6): Webサーバーを動かすために追加 --- 🔽
 from flask import Flask
 from threading import Thread
-# 🔼 --- 修正 (v6) --- 🔼
+
+# 🔽 --- 修正 (v8): asyncio をインポート --- 🔽
+import asyncio
+# 🔼 --- 修正 (v8) --- 🔼
 
 from utils import sheets_loader  
 from utils.quiz_view import QuizView, QuizData 
@@ -138,12 +139,80 @@ class MyClient(discord.Client):
             
         print("[Bot] setup_hook: コマンドの同期が完了しました。")
 
-    # 🔽 --- run_quiz_command 関数を丸ごと置き換えてください (v7) --- 🔽
+    # 🔽 --- 修正 (v8): run_quiz_command を丸ごと置き換え --- 🔽
     async def run_quiz_command(self, interaction: discord.Interaction, sheet_name: str, bot_title: str, allowed_channel_id: str):
         """
         スプレッドシートからデータを読み込んでクイズを実行する共通関数
-        (v7: タイムアウトエラー ＆ 応答競合の修正)
+        (v8: asyncio.to_thread でブロッキングI/Oを回避)
         """
+        try:
+            # 1. 最初に「本人にだけ見える」応答を defer する
+            await interaction.response.defer(ephemeral=True) 
+
+            # 2. チャンネルIDをチェックする (高速)
+            if allowed_channel_id and allowed_channel_id.strip() not in ['N/A', '0', '']:
+                allowed_channel_id_str = allowed_channel_id.strip()
+                if str(interaction.channel.id) != allowed_channel_id_str:
+                    
+                    error_message = f"このコマンド（`/ {interaction.command.name}`）は、このチャンネルでは実行できません。\n"
+                    try:
+                        channel_id_int = int(allowed_channel_id_str)
+                        target_channel = self.get_channel(channel_id_int) 
+                        if target_channel:
+                            error_message += f"（{target_channel.mention} でお試しください）"
+                        else:
+                            error_message += f"（指定されたチャンネルでお試しください）"
+                    except ValueError:
+                        error_message += f"（指定されたチャンネルでお試しください）"
+                    
+                    await interaction.edit_original_response(content=error_message)
+                    return
+            
+            # 3. クイズデータを「別スレッド」で取得する (低速だがフリーズしない)
+            print(f"[Bot] {interaction.user.name} のために {sheet_name} の読み込みを別スレッドで開始...")
+            
+            questions_data = await asyncio.to_thread(
+                sheets_loader.get_quiz_data, sheet_name
+            )
+            
+            print(f"[Bot] {sheet_name} の読み込み完了。")
+
+            # 4. 取得したデータをチェック
+            if not questions_data:
+                await interaction.edit_original_response(content=f"エラー: クイズデータ（{sheet_name}）を読み込めませんでした。")
+                return
+                
+            try:
+                quiz_data_list = [QuizData(q) for q in questions_data]
+            except Exception as e:
+                await interaction.edit_original_response(content=f"エラー: クイズデータの形式が正しくありません。(sheet: {sheet_name}): {e}")
+                return
+
+            # 5. 挑戦開始の「公開メッセージ」を送信
+            await interaction.channel.send(
+                f"**{interaction.user.mention} が「{bot_title}」に挑戦します！** 🎵"
+            )
+
+            # 6. 実際のクイズビューを開始
+            view = QuizView(quiz_data_list, bot_title)
+            await view.start(interaction)
+        
+        except Exception as e:
+            print(f"ERROR: run_quiz_command で予期せぬエラー: {e}")
+            if interaction.response.is_done():
+                try:
+                    await interaction.edit_original_response(content="予期せぬエラーが発生しました。")
+                except:
+                    pass # 編集に失敗しても無視
+            else:
+                try:
+                    await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)
+                except:
+                    pass # 送信に失敗しても無視
+    # 🔼 --- 修正 (v8) ここまで --- 🔼
+
+    """# 🔽 --- run_quiz_command 関数を丸ごと置き換えてください (v7) --- 🔽
+    async def run_quiz_command(self, interaction: discord.Interaction, sheet_name: str, bot_title: str, allowed_channel_id: str):
         try:
             # 1. 最初に「本人にだけ見える」応答を defer する
             #    (これにより、APIの読み込み時間が3秒以上かかってもOKになる)
@@ -199,72 +268,7 @@ class MyClient(discord.Client):
                 await interaction.edit_original_response(content="予期せぬエラーが発生しました。")
             else:
                 # defer にも失敗するほどの重エラーの場合
-                await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)
-
-    
-    #async def run_quiz_command(self, interaction: discord.Interaction, sheet_name: str, bot_title: str, allowed_channel_id: str):
-    #    """
-    #    スプレッドシートからデータを読み込んでクイズを実行する共通関数
-   #     (v4: チャンネル名表示に対応)
-  #      """
- #       try:
-#            await interaction.response.defer() 
-
-     #       # 🔽 --- 修正 (v4): チャンネルIDチェックとメンション表示 --- 🔽
-    #        if allowed_channel_id and allowed_channel_id.strip() not in ['N/A', '0', '']:
-   #             allowed_channel_id_str = allowed_channel_id.strip()
-  #              if str(interaction.channel.id) != allowed_channel_id_str:
-                    
- #                   # エラーメッセージを組み立てる
-#                    error_message = f"このコマンド（`/ {interaction.command.name}`）は、このチャンネルでは実行できません。\n"
-                    
-    #                try:
-   #                     # チャンネルID (文字列) を 整数 に変換
-  #                      channel_id_int = int(allowed_channel_id_str)
- #                       # ボット (self) からチャンネルオブジェクトを取得
-#                        target_channel = self.get_channel(channel_id_int) 
-                        
-        #                if target_channel:
-       #                     # チャンネルが見つかったら、メンション ( <#123> ) を使う
-      #                      error_message += f"（{target_channel.mention} でお試しください）"
-     #                   else:
-    #                        # チャンネルが見つからない (IDが古い等)
-   #                         error_message += f"（指定されたチャンネルでお試しください）"
-  #                  except ValueError:
- #                       # チャンネルIDが数字ではない (設定ミス)
-#                        error_message += f"（指定されたチャンネルでお試しください）"
-
-   #                 await interaction.followup.send(error_message, ephemeral=True)
-  #                  return # 処理を中断
- #           # 🔼 --- 修正 (v4) --- 🔼
-
-   #         questions_data = sheets_loader.get_quiz_data(sheet_name)
-            
-  #          if not questions_data:
- #               await interaction.followup.send(f"エラー: クイズデータ（{sheet_name}）を読み込めませんでした。", ephemeral=True)
-#                return
-                
-    #        try:
-   #             quiz_data_list = [QuizData(q) for q in questions_data]
-  #          except Exception as e:
- #               await interaction.followup.send(f"エラー: クイズデータの形式が正しくありません。(sheet: {sheet_name}): {e}", ephemeral=True)
-#                return
-
-     #       await interaction.followup.send(
-    #            f"**{interaction.user.mention} が「{bot_title}」に挑戦します！** 🎵\n"
-   #             f"*(クイズはあなた専用のメッセージで開始されます)*"
-  #          )
-
- #           view = QuizView(quiz_data_list, bot_title)
-#            await view.start(interaction)
-        
-    #    except Exception as e:
-   #         print(f"ERROR: run_quiz_command で予期せぬエラー: {e}")
-  #          if interaction.response.is_done():
- #               await interaction.followup.send("予期せぬエラーが発生しました。", ephemeral=True)
-  #          else:
- #               await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)
-
+                await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)"""
 
 client = MyClient(intents=intents)
 
@@ -273,13 +277,7 @@ async def on_ready():
     print(f'Logged in as {client.user} (ID: {client.user.id})')
     print('------')
 
-# 🔽 --- 修正 (v6): ボットの起動方法を変更 --- 🔽
-
-# 1. Webサーバーを別スレッドで起動する
-#    (これにより、ボットの実行を妨げずにポートを開く)
 web_thread = Thread(target=run_web_server)
 web_thread.start()
 
-# 2. ボット本体を起動する
 client.run(TOKEN)
-# 🔼 --- 修正 (v6) --- 🔼
