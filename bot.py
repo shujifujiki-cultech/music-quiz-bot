@@ -142,7 +142,7 @@ class MyClient(discord.Client):
     # 🔼 --- 修正 (v9) ここまで --- 🔼    
   
 
-"""
+    """
     async def setup_hook(self):
         print("[Bot] setup_hook: スプレッドシートからボットの登録を開始します...")
         
