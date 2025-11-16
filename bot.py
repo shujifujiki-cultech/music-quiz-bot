@@ -74,9 +74,75 @@ class MyClient(discord.Client):
         
         # 作成したコールバック関数そのものを返す
         return _actual_callback
-    # 🔼 --- 修正 (v4) --- 🔼
+    
+    # 🔽 --- 修正 (v9): setup_hook 内のブロッキングを修正 --- 🔽
+    async def setup_hook(self):
+        print("[Bot] setup_hook: スプレッドシートからボットの登録を開始します...")
+        
+        # 'bot_master_list' の読み込みを別スレッドで実行
+        print("[Bot] setup_hook: 'bot_master_list' の読み込みを別スレッドで開始...")
+        bot_list = await asyncio.to_thread(
+            sheets_loader.get_bot_master_list
+        )
+        print("[Bot] setup_hook: 'bot_master_list' の読み込み完了。")
 
+        if not bot_list:
+            print("[Bot] ERROR: bot_master_list が読み込めません。処理を中断します。")
+            return
 
+        print(f"[Bot] {len(bot_list)} 件のボット設定を読み込みました。")
+
+        for bot_config in bot_list:
+            if str(bot_config.get('is_active')).upper() != 'TRUE':
+                print(f"[Bot] スキップ: {bot_config.get('bot_title')} (is_active=FALSE)")
+                continue
+
+            bot_type = bot_config.get('type')
+            
+            if bot_type == 'クイズ':
+                try:
+                    command_name = bot_config['command_name']
+                    bot_title = bot_config['bot_title']
+                    sheet_name = bot_config['sheet_questions']
+                    allowed_channel_id = str(bot_config.get('allowed_channel_id', ''))
+
+                    if not all([command_name, bot_title, sheet_name]):
+                        print(f"[Bot] ERROR: クイズ設定に不備があります: {bot_config}")
+                        continue
+                    
+                    final_callback = self._create_quiz_callback(
+                        sheet_name, 
+                        bot_title, 
+                        allowed_channel_id
+                    )
+                    
+                    self.tree.add_command(
+                        app_commands.Command(
+                            name=command_name,
+                            description=f"{bot_title} を開始します。",
+                            callback=final_callback 
+                        )
+                    )
+                    
+                    print(f"[Bot] 登録 [クイズ]: /{command_name} ({bot_title})")
+
+                except Exception as e:
+                    print(f"[Bot] ERROR: クイズの登録に失敗: {bot_config} | Error: {e}")
+
+            elif bot_type == '診断':
+                print(f"[Bot] スキップ (未実装): {bot_config.get('bot_title')} (診断)")
+                pass
+        
+        if MY_GUILD:
+            await self.tree.sync(guild=MY_GUILD)
+        else:
+            await self.tree.sync() 
+            
+        print("[Bot] setup_hook: コマンドの同期が完了しました。")
+    # 🔼 --- 修正 (v9) ここまで --- 🔼    
+  
+
+"""
     async def setup_hook(self):
         print("[Bot] setup_hook: スプレッドシートからボットの登録を開始します...")
         
@@ -137,9 +203,9 @@ class MyClient(discord.Client):
         else:
             await self.tree.sync() 
             
-        print("[Bot] setup_hook: コマンドの同期が完了しました。")
+        print("[Bot] setup_hook: コマンドの同期が完了しました。")"""
 
-    # 🔽 --- 修正 (v8): run_quiz_command を丸ごと置き換え --- 🔽
+
     async def run_quiz_command(self, interaction: discord.Interaction, sheet_name: str, bot_title: str, allowed_channel_id: str):
         """
         スプレッドシートからデータを読み込んでクイズを実行する共通関数
@@ -210,65 +276,6 @@ class MyClient(discord.Client):
                 except:
                     pass # 送信に失敗しても無視
     # 🔼 --- 修正 (v8) ここまで --- 🔼
-
-    """# 🔽 --- run_quiz_command 関数を丸ごと置き換えてください (v7) --- 🔽
-    async def run_quiz_command(self, interaction: discord.Interaction, sheet_name: str, bot_title: str, allowed_channel_id: str):
-        try:
-            # 1. 最初に「本人にだけ見える」応答を defer する
-            #    (これにより、APIの読み込み時間が3秒以上かかってもOKになる)
-            await interaction.response.defer(ephemeral=True) 
-
-            # 2. チャンネルIDをチェックする
-            if allowed_channel_id and allowed_channel_id.strip() not in ['N/A', '0', '']:
-                allowed_channel_id_str = allowed_channel_id.strip()
-                if str(interaction.channel.id) != allowed_channel_id_str:
-                    
-                    error_message = f"このコマンド（`/ {interaction.command.name}`）は、このチャンネルでは実行できません。\n"
-                    try:
-                        channel_id_int = int(allowed_channel_id_str)
-                        target_channel = self.get_channel(channel_id_int) 
-                        if target_channel:
-                            error_message += f"（{target_channel.mention} でお試しください）"
-                        else:
-                            error_message += f"（指定されたチャンネルでお試しください）"
-                    except ValueError:
-                        error_message += f"（指定されたチャンネルでお試しください）"
-                    
-                    # 最初の defer を「編集」してエラーを伝える
-                    await interaction.edit_original_response(content=error_message)
-                    return # 処理を中断
-            
-            # 3. クイズデータを取得 (defer した後なので時間がかかってもOK)
-            questions_data = sheets_loader.get_quiz_data(sheet_name)
-            
-            if not questions_data:
-                await interaction.edit_original_response(content=f"エラー: クイズデータ（{sheet_name}）を読み込めませんでした。")
-                return
-                
-            try:
-                quiz_data_list = [QuizData(q) for q in questions_data]
-            except Exception as e:
-                await interaction.edit_original_response(content=f"エラー: クイズデータの形式が正しくありません。(sheet: {sheet_name}): {e}")
-                return
-
-            # 4. 挑戦開始の「公開メッセージ」を送信
-            #    (followup ではなく、新しいメッセージとして送信)
-            await interaction.channel.send(
-                f"**{interaction.user.mention} が「{bot_title}」に挑戦します！** 🎵"
-            )
-
-            # 5. 実際のクイズビューを開始
-            #    (view.start は、defer された元のメッセージを編集しにいく)
-            view = QuizView(quiz_data_list, bot_title)
-            await view.start(interaction)
-        
-        except Exception as e:
-            print(f"ERROR: run_quiz_command で予期せぬエラー: {e}")
-            if interaction.response.is_done():
-                await interaction.edit_original_response(content="予期せぬエラーが発生しました。")
-            else:
-                # defer にも失敗するほどの重エラーの場合
-                await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)"""
 
 client = MyClient(intents=intents)
 
