@@ -90,7 +90,8 @@ class QuizView(discord.ui.View):
             )
             button.callback = self.button_callback
             self.add_item(button)
-            
+
+    # 🔽 --- show_question 関数を丸ごと置き換えてください (v7) --- 🔽
     async def show_question(self):
         """
         現在の質問を表示し、ボタンを更新する
@@ -99,13 +100,27 @@ class QuizView(discord.ui.View):
         embed = self.create_embed(question)
         self.update_buttons(question)
         
+        # 🔽 --- 修正 (v7) --- 🔽
+        # 最初の質問(index=0)でも、2問目以降でも、
+        # bot.py で defer された元の (ephemeral) メッセージを「編集」する
+        await self.interaction.edit_original_response(embed=embed, view=self)
+        # 🔼 --- 修正 (v7) --- 🔼
+            
+#    async def show_question(self):
+#        """
+ #       現在の質問を表示し、ボタンを更新する
+  #      """
+#        question = self.questions[self.current_question_index]
+ #       embed = self.create_embed(question)
+  #      self.update_buttons(question)
+        
         # (ephemeral=True なので、メッセージは本人にしか見えない)
-        if self.current_question_index == 0:
+#        if self.current_question_index == 0:
             # 最初の質問 (defer しているので followup.send を使う)
-            await self.interaction.followup.send(embed=embed, view=self, ephemeral=True)
-        else:
+ #           await self.interaction.followup.send(embed=embed, view=self, ephemeral=True)
+  #      else:
             # 2問目以降 (メッセージを編集)
-            await self.interaction.edit_original_response(embed=embed, view=self)
+  #          await self.interaction.edit_original_response(embed=embed, view=self)
 
     # 🔽 --- button_callback 関数を丸ごと置き換えてください --- 🔽
     async def button_callback(self, interaction: discord.Interaction):
@@ -160,53 +175,6 @@ class QuizView(discord.ui.View):
             await self.show_question() # 修正された self.interaction を使って編集
         else:
             await self.show_result() # 全問終了
-
- #   async def button_callback(self, interaction: discord.Interaction):
- #       """
- #       いずれかの選択肢ボタンが押されたときの処理
- #       """
- #       await interaction.response.defer() # ボタンの応答
-        
- #       question = self.questions[self.current_question_index]
- #       selected_option_id = interaction.data['custom_id'] # "answer_1" など
- #       selected_answer = selected_option_id.split('_')[1] # "1"
-
-#        is_correct = (selected_answer == question.correct_answer)
-        
-        # 答え合わせのEmbedを作成
- #       if is_correct:
-  #          self.correct_count += 1
-   #         color = discord.Color.green()
-   #         title = "⭕ 正解！"
-   #     else:
-   #         color = discord.Color.red()
-   #         title = "❌ 不正解..."
-
-        # 1問ごとの解説 Embed
-#        result_embed = discord.Embed(
-#            title=title,
-#            description=f"**解説:**\n{question.explanation}",
-#            color=color
-#        )
-        # 正解の選択肢テキストを取得
-#        correct_index = int(question.correct_answer) - 1
-#        correct_text = question.options[correct_index]
-#        result_embed.add_field(name="正解", value=f"{correct_text}")
-
-        # ボタンを無効化してメッセージを編集 (質問Embed + 結果Embed の2つを表示)
-#        for item in self.children:
-#            item.disabled = True
-#        await interaction.edit_original_response(embeds=[self.create_embed(question), result_embed], view=self)
-
-        # 3秒待機 (解説を読む時間)
-#        await asyncio.sleep(3.0)
-
-        # 次の問題へ
-#        self.current_question_index += 1
-#        if self.current_question_index < len(self.questions):
-#            await self.show_question()
-#        else:
-#            await self.show_result() # 全問終了
 
     async def show_result(self):
         """
