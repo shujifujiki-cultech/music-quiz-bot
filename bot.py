@@ -110,7 +110,7 @@ class MyClient(discord.Client):
                 pass
         
         if MY_GUILD:
-            self.tree.copy_global_to(guild=MY_GUILD)
+#            self.tree.copy_global_to(guild=MY_GUILD)
             await self.tree.sync(guild=MY_GUILD)
         else:
             await self.tree.sync() 
