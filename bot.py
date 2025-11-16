@@ -7,6 +7,11 @@ from discord import app_commands
 import os
 from dotenv import load_dotenv 
 
+# 🔽 --- 修正 (v6): Webサーバーを動かすために追加 --- 🔽
+from flask import Flask
+from threading import Thread
+# 🔼 --- 修正 (v6) --- 🔼
+
 from utils import sheets_loader  
 from utils.quiz_view import QuizView, QuizData 
 
@@ -25,6 +30,22 @@ else:
     print("グローバルコマンドとして登録します (反映に時間がかかります)")
 
 intents = discord.Intents.default()
+
+# 🔽 --- 修正 (v6): Renderのヘルスチェック用Webサーバー --- 🔽
+app = Flask('')
+
+@app.route('/')
+def health_check():
+    # Render や UptimeRobot がアクセスするためのエンドポイント
+    print("[Web Server] Health check OK.")
+    return "Bot is alive!"
+
+def run_web_server():
+    # Render は 0.0.0.0 で 10000 (または 8080) をリッスンする
+    # 環境変数 PORT があればそれを使い、なければ 10000 を使う
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
+# 🔼 --- 修正 (v6) --- 🔼
 
 
 class MyClient(discord.Client):
@@ -189,4 +210,13 @@ async def on_ready():
     print(f'Logged in as {client.user} (ID: {client.user.id})')
     print('------')
 
+# 🔽 --- 修正 (v6): ボットの起動方法を変更 --- 🔽
+
+# 1. Webサーバーを別スレッドで起動する
+#    (これにより、ボットの実行を妨げずにポートを開く)
+web_thread = Thread(target=run_web_server)
+web_thread.start()
+
+# 2. ボット本体を起動する
 client.run(TOKEN)
+# 🔼 --- 修正 (v6) --- 🔼
