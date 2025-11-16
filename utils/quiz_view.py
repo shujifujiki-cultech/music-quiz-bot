@@ -105,22 +105,7 @@ class QuizView(discord.ui.View):
         # bot.py で defer された元の (ephemeral) メッセージを「編集」する
         await self.interaction.edit_original_response(embed=embed, view=self)
         # 🔼 --- 修正 (v7) --- 🔼
-            
-#    async def show_question(self):
-#        """
- #       現在の質問を表示し、ボタンを更新する
-  #      """
-#        question = self.questions[self.current_question_index]
- #       embed = self.create_embed(question)
-  #      self.update_buttons(question)
         
-        # (ephemeral=True なので、メッセージは本人にしか見えない)
-#        if self.current_question_index == 0:
-            # 最初の質問 (defer しているので followup.send を使う)
- #           await self.interaction.followup.send(embed=embed, view=self, ephemeral=True)
-  #      else:
-            # 2問目以降 (メッセージを編集)
-  #          await self.interaction.edit_original_response(embed=embed, view=self)
 
     # 🔽 --- button_callback 関数を丸ごと置き換えてください --- 🔽
     async def button_callback(self, interaction: discord.Interaction):
@@ -211,4 +196,4 @@ class QuizView(discord.ui.View):
         await self.interaction.edit_original_response(embed=embed, view=self)
         self.stop() # Viewを終了
         
-        #  (振り返りメッセージは、1問ずつの即時フィードバックに変更したため不要)
+      
