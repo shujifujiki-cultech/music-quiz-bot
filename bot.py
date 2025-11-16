@@ -30,7 +30,9 @@ if MY_GUILD:
 else:
     print("グローバルコマンドとして登録します (反映に時間がかかります)")
 
-intents = discord.Intents.default()
+# 🔽 --- 修正 (v13): Intents を .default() から .all() に変更 --- 🔽
+intents = discord.Intents.all()
+# 🔼 --- 修正 (v13) --- 🔼
 
 # --- Render (Web Service) 対応 ---
 app = Flask('')
