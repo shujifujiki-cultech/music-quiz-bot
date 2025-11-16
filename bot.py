@@ -48,6 +48,17 @@ def run_web_server():
 
 class MyClient(discord.Client):
     
+    # 🔽 --- 修正 (v12): 抜けていた __init__ を追加 --- 🔽
+    def __init__(self, *, intents: discord.Intents):
+        """ MyClient オブジェクトが作成されたときに実行される """
+        # discord.Client の初期化
+        super().__init__(intents=intents)
+        
+        # 💥 エラーの原因: この self.tree の定義が抜けていました
+        # self.tree (コマンドツリー) を作成する
+        self.tree = app_commands.CommandTree(self) 
+    # 🔼 --- 修正 (v12) --- 🔼
+
     def _create_quiz_callback(self, sheet_name: str, bot_title: str, allowed_channel_id: str):
         async def _actual_callback(interaction: discord.Interaction):
             await self.run_quiz_command(
