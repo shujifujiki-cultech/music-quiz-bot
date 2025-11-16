@@ -1,6 +1,6 @@
 # メインファイル
 # Discordボットのエントリーポイント
-# (v4: 予測候補の削除 ＆ チャンネル名表示に対応)
+# (v11: setup_hook 全体を try...except で囲み、エラーを特定する)
 
 import discord
 from discord import app_commands
@@ -8,10 +8,12 @@ import os
 from dotenv import load_dotenv 
 from flask import Flask
 from threading import Thread
+import asyncio 
 
-# 🔽 --- 修正 (v8): asyncio をインポート --- 🔽
-import asyncio
-# 🔼 --- 修正 (v8) --- 🔼
+# 🔽 --- 修正 (v11): トレースバック（詳細なエラー）を
+# 🔽 ログに出力するためにインポート --- 🔽
+import traceback
+# 🔼 --- 修正 (v11) --- 🔼
 
 from utils import sheets_loader  
 from utils.quiz_view import QuizView, QuizData 
@@ -32,55 +34,36 @@ else:
 
 intents = discord.Intents.default()
 
-# 🔽 --- 修正 (v6): Renderのヘルスチェック用Webサーバー --- 🔽
+# (Flask Webサーバーのコード ... )
 app = Flask('')
-
 @app.route('/')
 def health_check():
-    # Render や UptimeRobot がアクセスするためのエンドポイント
     print("[Web Server] Health check OK.")
     return "Bot is alive!"
-
 def run_web_server():
-    # Render は 0.0.0.0 で 10000 (または 8080) をリッスンする
-    # 環境変数 PORT があればそれを使い、なければ 10000 を使う
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
-# 🔼 --- 修正 (v6) --- 🔼
+# ( ... Webサーバーここまで)
 
 
 class MyClient(discord.Client):
-    def __init__(self, *, intents: discord.Intents):
-        super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
-
-    # 🔽 --- 修正 (v4): 予測候補を削除するため、ファクトリ関数パターンに変更 --- 🔽
+    
     def _create_quiz_callback(self, sheet_name: str, bot_title: str, allowed_channel_id: str):
-        """
-        コマンド実行時に呼ばれる「実際のコールバック関数」を
-        動的に生成するためのファクトリ（工場）関数。
-        """
-        
-        # この関数が Discord に 'callback' として登録される
         async def _actual_callback(interaction: discord.Interaction):
-            # この関数は引数を持たないが、
-            # 外側の関数の変数 (sheet_nameなど) を記憶している (クロージャー)
             await self.run_quiz_command(
                 interaction=interaction,
                 sheet_name=sheet_name,
                 bot_title=bot_title,
                 allowed_channel_id=allowed_channel_id
             )
-        
-        # 作成したコールバック関数そのものを返す
         return _actual_callback
-    
-    # 🔽 --- 修正 (v10): setup_hook の先頭でコマンドをクリアする --- 🔽
+
+    # 🔽 --- 修正 (v11): setup_hook 全体を try...except で囲む --- 🔽
     async def setup_hook(self):
-        print("[Bot] setup_hook: スプレッドシートからボットの登録を開始します...")
+        print("[Bot] setup_hook: (v11) 処理を開始します...")
         
-        # 1. 最初に、現在のコマンド登録をすべてクリアする
         try:
+            # 1. 最初に、現在のコマンド登録をすべてクリアする (v10のロジック)
             if MY_GUILD:
                 print(f"[Bot] setup_hook: ギルド {GUILD_ID} の古いコマンドをクリアします...")
                 self.tree.clear_commands(guild=MY_GUILD)
@@ -90,151 +73,88 @@ class MyClient(discord.Client):
                 self.tree.clear_commands(guild=None)
                 await self.tree.sync()
             print("[Bot] setup_hook: コマンドのクリアが完了しました。")
-        except Exception as e:
-            print(f"[Bot] ERROR: コマンドのクリア中にエラーが発生しました: {e}")
-            # エラーが発生しても、登録処理を続行してみる
 
-        # 2. 'bot_master_list' を別スレッドで読み込む (v9のまま)
-        print("[Bot] setup_hook: 'bot_master_list' の読み込みを別スレッドで開始...")
-        bot_list = await asyncio.to_thread(
-            sheets_loader.get_bot_master_list
-        )
-        print("[Bot] setup_hook: 'bot_master_list' の読み込み完了。")
+            # 2. 'bot_master_list' を別スレッドで読み込む (v10のロジック)
+            print("[Bot] setup_hook: 'bot_master_list' の読み込みを別スレッドで開始...")
+            bot_list = await asyncio.to_thread(
+                sheets_loader.get_bot_master_list
+            )
+            print("[Bot] setup_hook: 'bot_master_list' の読み込み完了。")
 
-        if not bot_list:
-            print("[Bot] ERROR: bot_master_list が読み込めません。処理を中断します。")
-            return
+            if not bot_list:
+                print("[Bot] ERROR: bot_master_list が読み込めません。処理を中断します。")
+                return
 
-        print(f"[Bot] {len(bot_list)} 件のボット設定を読み込みました。")
+            print(f"[Bot] {len(bot_list)} 件のボット設定を読み込みました。")
 
-        # 3. スプレッドシートに基づいて新しいコマンドを登録する (v9のまま)
-        for bot_config in bot_list:
-            if str(bot_config.get('is_active')).upper() != 'TRUE':
-                print(f"[Bot] スキップ: {bot_config.get('bot_title')} (is_active=FALSE)")
-                continue
+            # 3. スプレッドシートに基づいて新しいコマンドを登録する (v10のロジック)
+            successful_registrations = 0
+            for bot_config in bot_list:
+                if str(bot_config.get('is_active')).upper() != 'TRUE':
+                    continue
 
-            bot_type = bot_config.get('type')
-            
-            if bot_type == 'クイズ':
-                try:
-                    command_name = bot_config['command_name']
-                    bot_title = bot_config['bot_title']
-                    sheet_name = bot_config['sheet_questions']
-                    allowed_channel_id = str(bot_config.get('allowed_channel_id', ''))
+                bot_type = bot_config.get('type')
+                
+                if bot_type == 'クイズ':
+                    try:
+                        command_name = bot_config['command_name']
+                        bot_title = bot_config['bot_title']
+                        sheet_name = bot_config['sheet_questions']
+                        allowed_channel_id = str(bot_config.get('allowed_channel_id', ''))
 
-                    if not all([command_name, bot_title, sheet_name]):
-                        print(f"[Bot] ERROR: クイズ設定に不備があります: {bot_config}")
-                        continue
-                    
-                    final_callback = self._create_quiz_callback(
-                        sheet_name, 
-                        bot_title, 
-                        allowed_channel_id
-                    )
-                    
-                    self.tree.add_command(
-                        app_commands.Command(
-                            name=command_name,
-                            description=f"{bot_title} を開始します。",
-                            callback=final_callback 
+                        if not all([command_name, bot_title, sheet_name]):
+                            print(f"[Bot] ERROR: クイズ設定に不備があります: {bot_config}")
+                            continue
+                        
+                        final_callback = self._create_quiz_callback(
+                            sheet_name, 
+                            bot_title, 
+                            allowed_channel_id
                         )
-                    )
-                    
-                    print(f"[Bot] 登録 [クイズ]: /{command_name} ({bot_title})")
+                        
+                        self.tree.add_command(
+                            app_commands.Command(
+                                name=command_name,
+                                description=f"{bot_title} を開始します。",
+                                callback=final_callback 
+                            )
+                        )
+                        
+                        # print(f"[Bot] 登録 [クイズ]: /{command_name} ({bot_title})") # (ログが多すぎるので一旦コメントアウト)
+                        successful_registrations += 1
 
-                except Exception as e:
-                    print(f"[Bot] ERROR: クイズの登録に失敗: {bot_config} | Error: {e}")
+                    except Exception as e:
+                        print(f"[Bot] ERROR: クイズの登録に失敗: {bot_config} | Error: {e}")
 
-            elif bot_type == '診断':
-                print(f"[Bot] スキップ (未実装): {bot_config.get('bot_title')} (診断)")
-                pass
-        
-        # 4. 新しいコマンドリストで再度同期する
-        if MY_GUILD:
-            await self.tree.sync(guild=MY_GUILD)
-        else:
-            await self.tree.sync() 
+                elif bot_type == '診断':
+                    pass # (スキップ)
             
-        print("[Bot] setup_hook: コマンドの同期が完了しました。")
-    # 🔼 --- 修正 (v10) ここまで --- 🔼
-    
-    # 🔽 --- 修正 (v9): setup_hook 内のブロッキングを修正 --- 🔽
-    #async def setup_hook(self):
-    #    print("[Bot] setup_hook: スプレッドシートからボットの登録を開始します...")
-        
-        # 'bot_master_list' の読み込みを別スレッドで実行
-    #    print("[Bot] setup_hook: 'bot_master_list' の読み込みを別スレッドで開始...")
-    #    bot_list = await asyncio.to_thread(
-    #        sheets_loader.get_bot_master_list
-    #    )
-    #    print("[Bot] setup_hook: 'bot_master_list' の読み込み完了。")
+            print(f"[Bot] setup_hook: {successful_registrations} 件のクイズを .tree に登録しました。")
 
-     #   if not bot_list:
-      #      print("[Bot] ERROR: bot_master_list が読み込めません。処理を中断します。")
-       #     return
+            # 4. 新しいコマンドリストで再度同期する
+            if MY_GUILD:
+                await self.tree.sync(guild=MY_GUILD)
+            else:
+                await self.tree.sync() 
+                
+            print("[Bot] setup_hook: (v11) ★★★ コマンドの同期が完了しました ★★★")
 
-    #    print(f"[Bot] {len(bot_list)} 件のボット設定を読み込みました。")
-
-     #   for bot_config in bot_list:
-      #      if str(bot_config.get('is_active')).upper() != 'TRUE':
-       #         print(f"[Bot] スキップ: {bot_config.get('bot_title')} (is_active=FALSE)")
-        #        continue
-
-    #        bot_type = bot_config.get('type')
-            
-    #        if bot_type == 'クイズ':
-     #           try:
-      #              command_name = bot_config['command_name']
-       #             bot_title = bot_config['bot_title']
-        #            sheet_name = bot_config['sheet_questions']
-         #           allowed_channel_id = str(bot_config.get('allowed_channel_id', ''))
-
-    #                if not all([command_name, bot_title, sheet_name]):
-     #                   print(f"[Bot] ERROR: クイズ設定に不備があります: {bot_config}")
-      #                  continue
-                    
-    #                final_callback = self._create_quiz_callback(
-     #                   sheet_name, 
-      #                  bot_title, 
-       #                 allowed_channel_id
-        #            )
-                    
-    #                self.tree.add_command(
-     #                   app_commands.Command(
-      #                      name=command_name,
-       #                     description=f"{bot_title} を開始します。",
-        #                    callback=final_callback 
-         #               )
-          #          )
-                    
-    #                print(f"[Bot] 登録 [クイズ]: /{command_name} ({bot_title})")
-
-     #           except Exception as e:
-      #              print(f"[Bot] ERROR: クイズの登録に失敗: {bot_config} | Error: {e}")
-
-       #     elif bot_type == '診断':
-        #        print(f"[Bot] スキップ (未実装): {bot_config.get('bot_title')} (診断)")
-         #       pass
-        
-    #    if MY_GUILD:
-     #       await self.tree.sync(guild=MY_GUILD)
-      #  else:
-       #     await self.tree.sync() 
-            
-    #    print("[Bot] setup_hook: コマンドの同期が完了しました。")
-    # 🔼 --- 修正 (v9) ここまで --- 🔼    
+        except Exception as e:
+            # 💥 もし setup_hook 全体が失敗したら、ここにエラーログが出る
+            print("=================================================================")
+            print(" FATAL ERROR: [Bot] setup_hook が致命的なエラーでクラッシュしました")
+            print("=================================================================")
+            # トレースバック（詳細なエラー内容）をログに出力
+            traceback.print_exc()
+            print("=================================================================")
+    # 🔼 --- 修正 (v11) ここまで --- 🔼
 
 
     async def run_quiz_command(self, interaction: discord.Interaction, sheet_name: str, bot_title: str, allowed_channel_id: str):
-        """
-        スプレッドシートからデータを読み込んでクイズを実行する共通関数
-        (v8: asyncio.to_thread でブロッキングI/Oを回避)
-        """
+        # (v8 のコードのまま - 修正なし)
         try:
-            # 1. 最初に「本人にだけ見える」応答を defer する
             await interaction.response.defer(ephemeral=True) 
 
-            # 2. チャンネルIDをチェックする (高速)
             if allowed_channel_id and allowed_channel_id.strip() not in ['N/A', '0', '']:
                 allowed_channel_id_str = allowed_channel_id.strip()
                 if str(interaction.channel.id) != allowed_channel_id_str:
@@ -243,58 +163,44 @@ class MyClient(discord.Client):
                     try:
                         channel_id_int = int(allowed_channel_id_str)
                         target_channel = self.get_channel(channel_id_int) 
-                        if target_channel:
-                            error_message += f"（{target_channel.mention} でお試しください）"
-                        else:
-                            error_message += f"（指定されたチャンネルでお試しください）"
-                    except ValueError:
-                        error_message += f"（指定されたチャンネルでお試しください）"
+                        if target_channel: error_message += f"（{target_channel.mention} でお試しください）"
+                        else: error_message += f"（指定されたチャンネルでお試しください）"
+                    except ValueError: error_message += f"（指定されたチャンネルでお試しください）"
                     
                     await interaction.edit_original_response(content=error_message)
                     return
             
-            # 3. クイズデータを「別スレッド」で取得する (低速だがフリーズしない)
             print(f"[Bot] {interaction.user.name} のために {sheet_name} の読み込みを別スレッドで開始...")
-            
             questions_data = await asyncio.to_thread(
                 sheets_loader.get_quiz_data, sheet_name
             )
-            
             print(f"[Bot] {sheet_name} の読み込み完了。")
 
-            # 4. 取得したデータをチェック
             if not questions_data:
                 await interaction.edit_original_response(content=f"エラー: クイズデータ（{sheet_name}）を読み込めませんでした。")
                 return
                 
-            try:
-                quiz_data_list = [QuizData(q) for q in questions_data]
+            try: quiz_data_list = [QuizData(q) for q in questions_data]
             except Exception as e:
                 await interaction.edit_original_response(content=f"エラー: クイズデータの形式が正しくありません。(sheet: {sheet_name}): {e}")
                 return
 
-            # 5. 挑戦開始の「公開メッセージ」を送信
             await interaction.channel.send(
                 f"**{interaction.user.mention} が「{bot_title}」に挑戦します！** 🎵"
             )
 
-            # 6. 実際のクイズビューを開始
             view = QuizView(quiz_data_list, bot_title)
             await view.start(interaction)
         
         except Exception as e:
             print(f"ERROR: run_quiz_command で予期せぬエラー: {e}")
             if interaction.response.is_done():
-                try:
-                    await interaction.edit_original_response(content="予期せぬエラーが発生しました。")
-                except:
-                    pass # 編集に失敗しても無視
+                try: await interaction.edit_original_response(content="予期せぬエラーが発生しました。")
+                except: pass
             else:
-                try:
-                    await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)
-                except:
-                    pass # 送信に失敗しても無視
-    # 🔼 --- 修正 (v8) ここまで --- 🔼
+                try: await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)
+                except: pass
+
 
 client = MyClient(intents=intents)
 
@@ -303,7 +209,9 @@ async def on_ready():
     print(f'Logged in as {client.user} (ID: {client.user.id})')
     print('------')
 
+# Webサーバーを別スレッドで起動
 web_thread = Thread(target=run_web_server)
 web_thread.start()
 
+# ボット本体を起動
 client.run(TOKEN)
