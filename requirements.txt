@@ -1,6 +1,4 @@
-discord.py>=2.3.0
-aiohttp
-
+discord.py==2.3.2
 gspread
 oauth2client
 python-dotenv
