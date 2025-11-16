@@ -75,11 +75,26 @@ class MyClient(discord.Client):
         # 作成したコールバック関数そのものを返す
         return _actual_callback
     
-    # 🔽 --- 修正 (v9): setup_hook 内のブロッキングを修正 --- 🔽
+    # 🔽 --- 修正 (v10): setup_hook の先頭でコマンドをクリアする --- 🔽
     async def setup_hook(self):
         print("[Bot] setup_hook: スプレッドシートからボットの登録を開始します...")
         
-        # 'bot_master_list' の読み込みを別スレッドで実行
+        # 1. 最初に、現在のコマンド登録をすべてクリアする
+        try:
+            if MY_GUILD:
+                print(f"[Bot] setup_hook: ギルド {GUILD_ID} の古いコマンドをクリアします...")
+                self.tree.clear_commands(guild=MY_GUILD)
+                await self.tree.sync(guild=MY_GUILD)
+            else:
+                print("[Bot] setup_hook: 古いグローバルコマンドをクリアします...")
+                self.tree.clear_commands(guild=None)
+                await self.tree.sync()
+            print("[Bot] setup_hook: コマンドのクリアが完了しました。")
+        except Exception as e:
+            print(f"[Bot] ERROR: コマンドのクリア中にエラーが発生しました: {e}")
+            # エラーが発生しても、登録処理を続行してみる
+
+        # 2. 'bot_master_list' を別スレッドで読み込む (v9のまま)
         print("[Bot] setup_hook: 'bot_master_list' の読み込みを別スレッドで開始...")
         bot_list = await asyncio.to_thread(
             sheets_loader.get_bot_master_list
@@ -92,6 +107,7 @@ class MyClient(discord.Client):
 
         print(f"[Bot] {len(bot_list)} 件のボット設定を読み込みました。")
 
+        # 3. スプレッドシートに基づいて新しいコマンドを登録する (v9のまま)
         for bot_config in bot_list:
             if str(bot_config.get('is_active')).upper() != 'TRUE':
                 print(f"[Bot] スキップ: {bot_config.get('bot_title')} (is_active=FALSE)")
@@ -133,12 +149,79 @@ class MyClient(discord.Client):
                 print(f"[Bot] スキップ (未実装): {bot_config.get('bot_title')} (診断)")
                 pass
         
+        # 4. 新しいコマンドリストで再度同期する
         if MY_GUILD:
             await self.tree.sync(guild=MY_GUILD)
         else:
             await self.tree.sync() 
             
         print("[Bot] setup_hook: コマンドの同期が完了しました。")
+    # 🔼 --- 修正 (v10) ここまで --- 🔼
+    
+    # 🔽 --- 修正 (v9): setup_hook 内のブロッキングを修正 --- 🔽
+    #async def setup_hook(self):
+    #    print("[Bot] setup_hook: スプレッドシートからボットの登録を開始します...")
+        
+        # 'bot_master_list' の読み込みを別スレッドで実行
+    #    print("[Bot] setup_hook: 'bot_master_list' の読み込みを別スレッドで開始...")
+    #    bot_list = await asyncio.to_thread(
+    #        sheets_loader.get_bot_master_list
+    #    )
+    #    print("[Bot] setup_hook: 'bot_master_list' の読み込み完了。")
+
+     #   if not bot_list:
+      #      print("[Bot] ERROR: bot_master_list が読み込めません。処理を中断します。")
+       #     return
+
+    #    print(f"[Bot] {len(bot_list)} 件のボット設定を読み込みました。")
+
+     #   for bot_config in bot_list:
+      #      if str(bot_config.get('is_active')).upper() != 'TRUE':
+       #         print(f"[Bot] スキップ: {bot_config.get('bot_title')} (is_active=FALSE)")
+        #        continue
+
+    #        bot_type = bot_config.get('type')
+            
+    #        if bot_type == 'クイズ':
+     #           try:
+      #              command_name = bot_config['command_name']
+       #             bot_title = bot_config['bot_title']
+        #            sheet_name = bot_config['sheet_questions']
+         #           allowed_channel_id = str(bot_config.get('allowed_channel_id', ''))
+
+    #                if not all([command_name, bot_title, sheet_name]):
+     #                   print(f"[Bot] ERROR: クイズ設定に不備があります: {bot_config}")
+      #                  continue
+                    
+    #                final_callback = self._create_quiz_callback(
+     #                   sheet_name, 
+      #                  bot_title, 
+       #                 allowed_channel_id
+        #            )
+                    
+    #                self.tree.add_command(
+     #                   app_commands.Command(
+      #                      name=command_name,
+       #                     description=f"{bot_title} を開始します。",
+        #                    callback=final_callback 
+         #               )
+          #          )
+                    
+    #                print(f"[Bot] 登録 [クイズ]: /{command_name} ({bot_title})")
+
+     #           except Exception as e:
+      #              print(f"[Bot] ERROR: クイズの登録に失敗: {bot_config} | Error: {e}")
+
+       #     elif bot_type == '診断':
+        #        print(f"[Bot] スキップ (未実装): {bot_config.get('bot_title')} (診断)")
+         #       pass
+        
+    #    if MY_GUILD:
+     #       await self.tree.sync(guild=MY_GUILD)
+      #  else:
+       #     await self.tree.sync() 
+            
+    #    print("[Bot] setup_hook: コマンドの同期が完了しました。")
     # 🔼 --- 修正 (v9) ここまで --- 🔼    
 
 
