@@ -120,13 +120,23 @@ def load_sheet_data(sheet_name):
         
     return data
 
-# --- bot.py から利用する関数 ---
-
+# 🔽 --- 修正 (v2): 起動時 (setup_hook) は必ず生データを取得 --- 🔽
 def get_bot_master_list():
     """
     ボットのマスターリスト（bot_master_list）を取得する
+    (起動時に呼ばれるため、キャッシュを「使わない」)
     """
-    return load_sheet_data('bot_master_list')
+    # load_sheet_data() ではなく _fetch_sheet_data() を直接呼ぶ
+    return _fetch_sheet_data('bot_master_list')
+# 🔼 --- 修正 (v2) --- 🔼
+
+# --- bot.py から利用する関数 ---
+
+#def get_bot_master_list():
+#    """
+#    ボットのマスターリスト（bot_master_list）を取得する
+#    """
+#    return load_sheet_data('bot_master_list')
 
 def get_quiz_data(sheet_name):
     """
