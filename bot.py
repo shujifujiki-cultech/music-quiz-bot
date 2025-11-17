@@ -1,18 +1,16 @@
 # メインファイル
 # Discordボットのエントリーポイント
-# (v15: Flask/Threading を廃止し、Quart/Hypercorn (asyncioネイティブ) に移行)
-# (v14: setup_hook/on_ready のロジック分離を適用)
+# (v16: 最終確定版 - Python 3.10.13)
+# (v16: asyncio をメインにし、Flask を to_thread で実行)
 
 import discord
 from discord import app_commands
 import os
 from dotenv import load_dotenv 
 
-# 🔽 --- 修正 (v15): Flask/Thread を Quart/Hypercorn に変更 --- 🔽
-from quart import Quart
-from hypercorn.config import Config as HypercornConfig
-from hypercorn.asyncio import serve
-# 🔼 --- 修正 (v15) --- 🔼
+# 🔽 --- 修正 (v16): Flask をインポート (Quart ではない) --- 🔽
+from flask import Flask
+# 🔼 --- 修正 (v16) --- 🔼
 
 import asyncio 
 import traceback 
@@ -38,12 +36,18 @@ else:
 # v13 と同様に、Discord Developer Portal で3つのインテントをONにする
 intents = discord.Intents.all() 
 
-# --- Render (Web Service) 対応 (v15: Quart版) ---
-app = Quart('')
+# --- Render (Web Service) 対応 (v16: Flask版) ---
+app = Flask('')
 @app.route('/')
-async def health_check():
+def health_check():
     print("[Web Server] Health check OK.")
     return "Bot is alive!"
+
+def run_web_server():
+    """ (v16) Flask サーバーを「ブロッキング」で実行する関数 """
+    port = int(os.environ.get('PORT', 10000))
+    # app.run を直接呼び出す
+    app.run(host='0.0.0.0', port=port)
 # --- Render対応ここまで ---
 
 
@@ -66,16 +70,11 @@ class MyClient(discord.Client):
             )
         return _actual_callback
 
-    # 🔽 --- 修正 (v14/v15): setup_hook の役割を「ロード」のみに限定 --- 🔽
+    # v14 と同様に setup_hook を定義
     async def setup_hook(self):
-        """
-        起動時、Discord接続「前」に実行される。
-        コマンドを .tree にロード（準備）するだけ。
-        """
-        print("[Bot] setup_hook: (v15) 処理を開始します (コマンドのロード)...")
-        
+        """ (v14) 起動時、Discord接続「前」に実行される """
+        print("[Bot] setup_hook: (v16) 処理を開始します (コマンドのロード)...")
         try:
-            # 1. マスターリストを非同期で読み込み
             print("[Bot] setup_hook: 'bot_master_list' の読み込みを別スレッドで開始...")
             bot_list = await asyncio.to_thread(
                 sheets_loader.get_bot_master_list
@@ -88,7 +87,6 @@ class MyClient(discord.Client):
 
             print(f"[Bot] {len(bot_list)} 件のボット設定を読み込みました。")
 
-            # 2. 新しいコマンドを .tree に登録（準備）
             successful_registrations = 0
             for bot_config in bot_list:
                 if str(bot_config.get('is_active')).upper() != 'TRUE':
@@ -120,7 +118,7 @@ class MyClient(discord.Client):
                     pass 
             
             print(f"[Bot] setup_hook: {successful_registrations} 件のクイズを .tree に登録しました。")
-            print("[Bot] setup_hook: (v15) コマンドのロードが完了しました。")
+            print("[Bot] setup_hook: (v16) コマンドのロードが完了しました。")
 
         except Exception as e:
             print("=================================================================")
@@ -128,8 +126,7 @@ class MyClient(discord.Client):
             print("=================================================================")
             traceback.print_exc()
             print("=================================================================")
-    # 🔼 --- 修正 (v14/v15) ここまで --- 🔼
-
+    
     async def run_quiz_command(self, interaction: discord.Interaction, sheet_name: str, bot_title: str, allowed_channel_id: str):
         # (v12 と同様)
         try:
@@ -172,19 +169,17 @@ class MyClient(discord.Client):
                 try: await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)
                 except: pass
 
-# --- ボットの実行 (v15) ---
+# --- ボットの実行 (v16) ---
 client = MyClient(intents=intents)
 
-# 🔽 --- 修正 (v14/v15): on_ready で sync を実行する --- 🔽
+# v14 と同様に on_ready を定義
 @client.event
 async def on_ready():
-    """
-    Discord への接続が「完了」した後に呼び出される
-    """
+    """ (v14) Discord 接続「後」に実行される """
     print(f'Logged in as {client.user} (ID: {client.user.id})')
     print('------')
     
-    print("[Bot] on_ready: (v15) 処理を開始します (コマンドの同期)...")
+    print("[Bot] on_ready: (v16) 処理を開始します (コマンドの同期)...")
     try:
         if MY_GUILD:
             print(f"[Bot] on_ready: ギルド {GUILD_ID} のコマンドをクリアします...")
@@ -195,7 +190,7 @@ async def on_ready():
             client.tree.clear_commands(guild=None)
             await client.tree.sync()
             
-        print("[Bot] on_ready: (v15) ★★★ コマンドの同期が完了しました ★★★")
+        print("[Bot] on_ready: (v16) ★★★ コマンドの同期が完了しました ★★★")
         
     except Exception as e:
         print("=================================================================")
@@ -203,26 +198,33 @@ async def on_ready():
         print("=================================================================")
         traceback.print_exc()
         print("=================================================================")
-# 🔼 --- 修正 (v14/v15) ここまで --- 🔼
 
-# 🔽 --- 修正 (v15): asyncio メイン関数 (Flask/Thread を置き換え) --- 🔽
+# 🔽 --- 修正 (v16): asyncio メイン関数 (Flask/Thread ではない) --- 🔽
 async def main():
     """
-    ボット (client.start) と Webサーバー (serve) を
+    ボット (client.start) と Webサーバー (to_thread(run_web_server)) を
     1つの asyncio イベントループで同時に実行する
     """
-    port = int(os.environ.get('PORT', 10000))
-    hypercorn_config = HypercornConfig()
-    hypercorn_config.bind = [f"0.0.0.0:{port}"]
+    print("[Main] (v16) Webサーバー(Flask) と Discordボット を asyncio で起動します...")
     
-    print("[Main] (v15) Webサーバー と Discordボット を asyncio で起動します...")
+    # client.start() を直接 await するのではなく、
+    # client.login() + client.connect() を使う (start() はブロッキングのため)
     
-    await asyncio.gather(
-        serve(app, hypercorn_config),
-        client.start(TOKEN)
-    )
+    async with client:
+        # 1. Webサーバーをバックグラウンドスレッドで起動
+        # (Render がポート 10000 をスキャンできるようにする)
+        await asyncio.to_thread(run_web_server)
+        
+        # 2. ボット本体をメインスレッド (asyncio) で起動
+        # (client.run() や client.start() ではなく、
+        #  async with を使って login() と connect() を呼び出す)
+        await client.login(TOKEN)
+        await client.connect(reconnect=True)
 
 if __name__ == "__main__":
-    # 💥 v15: 実行方法を client.run() から asyncio.run(main()) に変更
-    asyncio.run(main())
-# 🔼 --- 修正 (v15) ここまで --- 🔼
+    # 💥 v16: 実行方法を asyncio.run(main()) に変更
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot is shutting down...")
+# 🔼 --- 修正 (v16) ここまで --- 🔼
