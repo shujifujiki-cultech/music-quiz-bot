@@ -1,5 +1,5 @@
 # クイズ用の共通Viewクラス
-# (フェーズ3: スプレッドシート連携版)
+# (v2.5: 待機時間2秒 + 復習機能 + タイムアウト処理 + クリック可能なコマンド - コマンドID取得方法改善)
 
 import discord
 import random
@@ -45,7 +45,6 @@ class QuizData:
 class QuizView(discord.ui.View):
     """クイズ用の共通Viewクラス (スプレッドシート連携版)"""
 
-    # __init__ を大幅に変更。bot.py から QuizData のリストとタイトルを受け取る
     def __init__(self, questions: list[QuizData], bot_title: str):
         super().__init__(timeout=300.0) # 5分でタイムアウト
         self.questions = random.sample(questions, k=len(questions)) # 問題をシャッフル
@@ -55,12 +54,19 @@ class QuizView(discord.ui.View):
         self.current_question_index = 0
         self.correct_count = 0
         self.interaction = None # start() で interaction を保持する
+        
+        # 🔽 復習機能 (v2): 各問題の結果を記録
+        self.results_history = []  # 各問題の結果を保存するリスト
 
     async def start(self, interaction: discord.Interaction):
         """
         クイズの開始（bot.pyから呼び出される）
         """
         self.interaction = interaction # 親となる interaction を保持
+        # 🔽 v2.5: コマンド名とIDを安全に取得
+        self.command_name = interaction.command.name if interaction.command else "quiz"
+        # コマンドIDは interaction.data から取得（より安全）
+        self.command_id = interaction.data.get('id', '0') if hasattr(interaction, 'data') else '0'
         await self.show_question()
 
     def create_embed(self, question: QuizData):
@@ -91,7 +97,6 @@ class QuizView(discord.ui.View):
             button.callback = self.button_callback
             self.add_item(button)
 
-    # 🔽 --- show_question 関数を丸ごと置き換えてください (v7) --- 🔽
     async def show_question(self):
         """
         現在の質問を表示し、ボタンを更新する
@@ -100,24 +105,26 @@ class QuizView(discord.ui.View):
         embed = self.create_embed(question)
         self.update_buttons(question)
         
-        # 🔽 --- 修正 (v7) --- 🔽
         # 最初の質問(index=0)でも、2問目以降でも、
         # bot.py で defer された元の (ephemeral) メッセージを「編集」する
         await self.interaction.edit_original_response(embed=embed, view=self)
-        # 🔼 --- 修正 (v7) --- 🔼
-        
 
-    # 🔽 --- button_callback 関数を丸ごと置き換えてください --- 🔽
     async def button_callback(self, interaction: discord.Interaction):
         """
         いずれかの選択肢ボタンが押されたときの処理
         """
         
-        # 🔽 --- 追加: 
+        # 🔽 タイムアウトチェック (v2.4)
+        if self.is_finished():
+            await interaction.response.send_message(
+                f"⏰ このクイズセッションは時間切れで終了しました。\n再度遊ぶ場合は </{self.command_name}:{self.command_id}> をクリックしてください。",
+                ephemeral=True
+            )
+            return
+        
         # 2問目以降の操作対象(self.interaction)を、
         # このボタンが押されたメッセージ(interaction)に固定する
         self.interaction = interaction
-        # 🔼 --- 追加完了
         
         await interaction.response.defer() # ボタンの応答
         
@@ -132,9 +139,11 @@ class QuizView(discord.ui.View):
             self.correct_count += 1
             color = discord.Color.green()
             title = "⭕ 正解！"
+            result_icon = "⭕"
         else:
             color = discord.Color.red()
             title = "❌ 不正解..."
+            result_icon = "❌"
 
         result_embed = discord.Embed(
             title=title,
@@ -146,13 +155,23 @@ class QuizView(discord.ui.View):
         correct_text = question.options[correct_index]
         result_embed.add_field(name="正解", value=f"{correct_text}")
 
+        # 🔽 復習機能 (v2): 結果を記録
+        self.results_history.append({
+            'question_number': self.current_question_index + 1,
+            'question_text': question.question_text,
+            'is_correct': is_correct,
+            'result_icon': result_icon,
+            'correct_text': correct_text,
+            'explanation': question.explanation
+        })
+
         # ボタンを無効化してメッセージを編集 (質問Embed + 結果Embed の2つを表示)
         for item in self.children:
             item.disabled = True
         await interaction.edit_original_response(embeds=[self.create_embed(question), result_embed], view=self)
 
-        # 3秒待機 (解説を読む時間)
-        await asyncio.sleep(3.0)
+        # 🔽 待機時間調整 (v2.1): 2秒に設定
+        await asyncio.sleep(2.0)
 
         # 次の問題へ
         self.current_question_index += 1
@@ -164,14 +183,14 @@ class QuizView(discord.ui.View):
     async def show_result(self):
         """
         最終結果を表示する
-        (ご提示いただいた create_result_message のロジックをここに統合)
+        (v2: 復習機能を追加)
         """
         
         total = len(self.questions)
         score = self.correct_count
         percentage = int((score / total) * 100)
         
-        # 🔽 --- ご提示いただいた素晴らしいロジックを活用 --- 🔽
+        # 成績判定
         if percentage >= 90:
             grade = "🏆 マスター!"
             comment = "素晴らしい!あなたは達人です!"
@@ -184,16 +203,84 @@ class QuizView(discord.ui.View):
         else:
             grade = "🎹 初級者"
             comment = "これから学んでいきましょう!"
-        # 🔼 --- ここまで --- 🔼
 
-        embed = discord.Embed(
+        # 結果発表のEmbed
+        result_embed = discord.Embed(
             title=f"【{self.bot_title}】 - 結果発表",
             description=f"✨ **{grade}** ✨\n\n正解数: **{score}/{total}問** ({percentage}%)\n\n{comment}",
             color=discord.Color.gold()
         )
         
         self.clear_items() # 全てのボタンを削除
-        await self.interaction.edit_original_response(embed=embed, view=self)
-        self.stop() # Viewを終了
+        await self.interaction.edit_original_response(embed=result_embed, view=self)
         
-      
+        # 🔽 復習機能 (v2): 全問題の詳細を表示
+        await self.show_review()
+        
+        self.stop() # Viewを終了
+    
+    async def show_review(self):
+        """
+        復習機能: 全問題の正解/不正解と解説を表示する
+        """
+        # 復習用のEmbedを作成（複数に分割する可能性あり）
+        review_embeds = []
+        
+        # Discordのfield制限: 1つのEmbedに最大25個のfieldまで
+        # 問題が多い場合は複数のEmbedに分割
+        MAX_FIELDS_PER_EMBED = 25
+        
+        for i in range(0, len(self.results_history), MAX_FIELDS_PER_EMBED):
+            chunk = self.results_history[i:i + MAX_FIELDS_PER_EMBED]
+            
+            embed = discord.Embed(
+                title=f"📝 復習 - 全問題の詳細",
+                description="各問題の正解と解説を確認できます。",
+                color=discord.Color.blue()
+            )
+            
+            for result in chunk:
+                # フィールド名: 問題番号と正解/不正解
+                field_name = f"{result['result_icon']} 第{result['question_number']}問"
+                
+                # フィールド値: 問題文、正解、解説
+                # Discordのfield値の制限: 1024文字まで
+                field_value = f"**問題:** {result['question_text']}\n"
+                field_value += f"**正解:** {result['correct_text']}\n"
+                field_value += f"**解説:** {result['explanation']}"
+                
+                # 1024文字を超える場合は切り詰める
+                if len(field_value) > 1024:
+                    field_value = field_value[:1020] + "..."
+                
+                embed.add_field(
+                    name=field_name,
+                    value=field_value,
+                    inline=False  # 各問題を縦に並べる
+                )
+            
+            review_embeds.append(embed)
+        
+        # 復習Embedを送信（ephemeralで本人のみに表示）
+        for embed in review_embeds:
+            await self.interaction.followup.send(embed=embed, ephemeral=True)
+    
+    async def on_timeout(self):
+        """
+        タイムアウト時の処理（5分経過）
+        """
+        # ボタンを無効化
+        for item in self.children:
+            item.disabled = True
+        
+        # タイムアウトメッセージを表示
+        timeout_embed = discord.Embed(
+            title="⏰ タイムアウト",
+            description=f"クイズセッションの制限時間（5分）が経過しました。\n\n**正解数:** {self.correct_count}/{self.current_question_index}問\n\n再度遊ぶ場合は </{self.command_name}:{self.command_id}> をクリックしてください。",
+            color=discord.Color.orange()
+        )
+        
+        try:
+            await self.interaction.edit_original_response(embed=timeout_embed, view=self)
+        except:
+            pass  # メッセージが削除されている場合などのエラーを無視

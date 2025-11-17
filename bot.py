@@ -1,22 +1,23 @@
 # メインファイル
 # Discordボットのエントリーポイント
-# (v17: 最終確定版 - asyncio.gather を使って Flask と bot を並行実行)
+# (v20: ギルド固有コマンド登録の修正版)
 
 import discord
 from discord import app_commands
 import os
 from dotenv import load_dotenv 
 
-# v16 と同じく Flask をインポート
+# Flask をインポート
 from flask import Flask
 
 import asyncio 
 import traceback 
+import threading  # 🔽 追加: Flaskを別スレッドで起動するため
 
 from utils import sheets_loader  
 from utils.quiz_view import QuizView, QuizData 
 
-# --- 設定の読み込み (v16 と同じ) ---
+# --- 設定の読み込み ---
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 GUILD_ID = os.getenv('GUILD_ID') 
@@ -31,10 +32,10 @@ if MY_GUILD:
 else:
     print("グローバルコマンドとして登録します (反映に時間がかかります)")
 
-# v16 と同じ (Discord Developer Portal で3つのインテントをONにする)
+# Discord Developer Portal で3つのインテントをONにする
 intents = discord.Intents.all() 
 
-# --- Render (Web Service) 対応 (v16 と同じ) ---
+# --- Render (Web Service) 対応 ---
 app = Flask('')
 @app.route('/')
 def health_check():
@@ -42,13 +43,14 @@ def health_check():
     return "Bot is alive!"
 
 def run_web_server():
-    """ (v16) Flask サーバーを「ブロッキング」で実行する関数 """
+    """ Flask サーバーを実行する関数 """
     port = int(os.environ.get('PORT', 10000))
+    print(f"[Web Server] (v20) Flask を起動します (ポート: {port})...")
     app.run(host='0.0.0.0', port=port)
 # --- Render対応ここまで ---
 
 
-# --- メインのボットクラス (v16 と同じ) ---
+# --- メインのボットクラス ---
 class MyClient(discord.Client):
     
     def __init__(self, *, intents: discord.Intents):
@@ -66,8 +68,8 @@ class MyClient(discord.Client):
         return _actual_callback
 
     async def setup_hook(self):
-        """ (v16) 起動時、Discord接続「前」に実行される """
-        print("[Bot] setup_hook: (v17) 処理を開始します (コマンドのロード)...")
+        """ 起動時、Discord接続「前」に実行される """
+        print("[Bot] setup_hook: (v20) 処理を開始します (コマンドのロード)...")
         try:
             print("[Bot] setup_hook: 'bot_master_list' の読み込みを別スレッドで開始...")
             bot_list = await asyncio.to_thread(
@@ -98,12 +100,14 @@ class MyClient(discord.Client):
                         final_callback = self._create_quiz_callback(
                             sheet_name, bot_title, allowed_channel_id
                         )
+                        # 🔽 修正 (v20): ギルド固有のコマンドとして登録
                         self.tree.add_command(
                             app_commands.Command(
                                 name=command_name,
                                 description=f"{bot_title} を開始します。",
                                 callback=final_callback 
-                            )
+                            ),
+                            guild=MY_GUILD  # ← ギルド固有として登録
                         )
                         successful_registrations += 1
                     except Exception as e:
@@ -112,7 +116,7 @@ class MyClient(discord.Client):
                     pass 
             
             print(f"[Bot] setup_hook: {successful_registrations} 件のクイズを .tree に登録しました。")
-            print("[Bot] setup_hook: (v17) コマンドのロードが完了しました。")
+            print("[Bot] setup_hook: (v20) コマンドのロードが完了しました。")
 
         except Exception as e:
             print("=================================================================")
@@ -122,13 +126,12 @@ class MyClient(discord.Client):
             print("=================================================================")
     
     async def run_quiz_command(self, interaction: discord.Interaction, sheet_name: str, bot_title: str, allowed_channel_id: str):
-        # (v16 と同様)
         try:
             await interaction.response.defer(ephemeral=True) 
             if allowed_channel_id and allowed_channel_id.strip() not in ['N/A', '0', '']:
                 allowed_channel_id_str = allowed_channel_id.strip()
                 if str(interaction.channel.id) != allowed_channel_id_str:
-                    error_message = f"このコマンド（`/ {interaction.command.name}`）は、このチャンネルでは実行できません。\n"
+                    error_message = f"このコマンド（`/{interaction.command.name}`）は、このチャンネルでは実行できません。\n"
                     try:
                         channel_id_int = int(allowed_channel_id_str)
                         target_channel = self.get_channel(channel_id_int) 
@@ -163,28 +166,32 @@ class MyClient(discord.Client):
                 try: await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)
                 except: pass
 
-# --- ボットの実行 (v17) ---
+# --- ボットの実行 (v18) ---
 client = MyClient(intents=intents)
 
-# v16 と同様に on_ready を定義
 @client.event
 async def on_ready():
-    """ (v16) Discord 接続「後」に実行される """
+    """ Discord 接続「後」に実行される """
     print(f'Logged in as {client.user} (ID: {client.user.id})')
     print('------')
     
-    print("[Bot] on_ready: (v17) 処理を開始します (コマンドの同期)...")
+    print("[Bot] on_ready: (v20) 処理を開始します (コマンドの同期)...")
     try:
+        # 🔽 デバッグ: 登録されているコマンド数を確認
+        commands_in_tree = client.tree.get_commands(guild=MY_GUILD)
+        print(f"[Bot] on_ready: tree に登録されているコマンド数: {len(commands_in_tree)}")
+        
         if MY_GUILD:
-            print(f"[Bot] on_ready: ギルド {GUILD_ID} のコマンドをクリアします...")
-            client.tree.clear_commands(guild=MY_GUILD) 
-            await client.tree.sync(guild=MY_GUILD)
+            print(f"[Bot] on_ready: ギルド {GUILD_ID} にコマンドを同期します...")
+            # 🔽 修正: clear_commands() を削除（setup_hook で登録したコマンドを保持）
+            synced = await client.tree.sync(guild=MY_GUILD)
+            print(f"[Bot] on_ready: {len(synced)} 個のコマンドを同期しました")
         else:
-            print("[Bot] on_ready: グローバルコマンドをクリアします...")
-            client.tree.clear_commands(guild=None)
-            await client.tree.sync()
+            print("[Bot] on_ready: グローバルコマンドとして同期します...")
+            synced = await client.tree.sync()
+            print(f"[Bot] on_ready: {len(synced)} 個のコマンドを同期しました")
             
-        print("[Bot] on_ready: (v17) ★★★ コマンドの同期が完了しました ★★★")
+        print("[Bot] on_ready: (v20) ★★★ コマンドの同期が完了しました ★★★")
         
     except Exception as e:
         print("=================================================================")
@@ -193,34 +200,25 @@ async def on_ready():
         traceback.print_exc()
         print("=================================================================")
 
-# 🔽 --- 修正 (v17): asyncio メイン関数 (v16 のバグを修正) --- 🔽
+# 🔽 --- 修正 (v18): Threading で Flask を起動し、ボットをメインループで実行 --- 🔽
 async def main():
     """
-    ボット (run_bot) と Webサーバー (web_task) を
-    1つの asyncio イベントループで「並行」実行する
+    Flask サーバーを daemon thread で起動し、
+    ボットをメイン asyncio ループで実行する
     """
-    print("[Main] (v17) Webサーバー(Flask) と Discordボット を asyncio.gather で起動します...")
+    print("[Main] (v20) Flask を daemon thread で起動し、ボットをメインループで実行します...")
     
-    # タスク1: Flask サーバー (ブロッキング) を別スレッドで実行
-    web_task = asyncio.to_thread(run_web_server)
+    # Flask を別スレッドで起動（daemon=True で、ボット終了時に自動終了）
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    print("[Main] (v20) Flask サーバーを起動しました。")
     
-    # タスク2: Discord ボット (非同期) を実行
-    async def run_bot():
-        async with client:
-            await client.login(TOKEN)
-            await client.connect(reconnect=True)
-
-    bot_task = run_bot()
-
-    # 両方のタスクを並行して実行
-    await asyncio.gather(
-        web_task,
-        bot_task
-    )
-# 🔼 --- 修正 (v17) ここまで --- 🔼
+    # ボットをメインループで実行
+    async with client:
+        await client.start(TOKEN)
+# 🔼 --- 修正 (v18) ここまで --- 🔼
 
 if __name__ == "__main__":
-    # v16 と同様に asyncio.run(main()) で実行
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
