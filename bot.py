@@ -1,6 +1,6 @@
 # メインファイル
 # Discordボットのエントリーポイント
-# (v20: ギルド固有コマンド登録の修正版)
+# (v21: 診断機能を追加 - クイズと診断の両方に対応)
 
 import discord
 from discord import app_commands
@@ -12,10 +12,12 @@ from flask import Flask
 
 import asyncio 
 import traceback 
-import threading  # 🔽 追加: Flaskを別スレッドで起動するため
+import threading  # Flaskを別スレッドで起動するため
 
 from utils import sheets_loader  
 from utils.quiz_view import QuizView, QuizData 
+# 🔽 追加: 診断機能のインポート
+from utils.diagnosis_view import DiagnosisView, DiagnosisQuestion, DiagnosisResult
 
 # --- 設定の読み込み ---
 load_dotenv()
@@ -45,7 +47,7 @@ def health_check():
 def run_web_server():
     """ Flask サーバーを実行する関数 """
     port = int(os.environ.get('PORT', 10000))
-    print(f"[Web Server] (v20) Flask を起動します (ポート: {port})...")
+    print(f"[Web Server] (v21) Flask を起動します (ポート: {port})...")
     app.run(host='0.0.0.0', port=port)
 # --- Render対応ここまで ---
 
@@ -58,6 +60,7 @@ class MyClient(discord.Client):
         self.tree = app_commands.CommandTree(self) 
 
     def _create_quiz_callback(self, sheet_name: str, bot_title: str, allowed_channel_id: str):
+        """クイズコマンド用のコールバック関数を生成"""
         async def _actual_callback(interaction: discord.Interaction):
             await self.run_quiz_command(
                 interaction=interaction,
@@ -67,9 +70,23 @@ class MyClient(discord.Client):
             )
         return _actual_callback
 
+    # 🔽 追加: 診断コマンド用のコールバック関数を生成
+    def _create_diagnosis_callback(self, sheet_questions: str, sheet_results: str, 
+                                   bot_title: str, allowed_channel_id: str):
+        """診断コマンド用のコールバック関数を生成"""
+        async def _actual_callback(interaction: discord.Interaction):
+            await self.run_diagnosis_command(
+                interaction=interaction,
+                sheet_questions=sheet_questions,
+                sheet_results=sheet_results,
+                bot_title=bot_title,
+                allowed_channel_id=allowed_channel_id
+            )
+        return _actual_callback
+
     async def setup_hook(self):
         """ 起動時、Discord接続「前」に実行される """
-        print("[Bot] setup_hook: (v20) 処理を開始します (コマンドのロード)...")
+        print("[Bot] setup_hook: (v21) 処理を開始します (コマンドのロード)...")
         try:
             print("[Bot] setup_hook: 'bot_master_list' の読み込みを別スレッドで開始...")
             bot_list = await asyncio.to_thread(
@@ -84,39 +101,78 @@ class MyClient(discord.Client):
             print(f"[Bot] {len(bot_list)} 件のボット設定を読み込みました。")
 
             successful_registrations = 0
+            quiz_count = 0
+            diagnosis_count = 0
+            
             for bot_config in bot_list:
                 if str(bot_config.get('is_active')).upper() != 'TRUE':
                     continue
+                
                 bot_type = bot_config.get('type')
+                
+                # クイズの登録
                 if bot_type == 'クイズ':
                     try:
                         command_name = bot_config['command_name']
                         bot_title = bot_config['bot_title']
                         sheet_name = bot_config['sheet_questions']
                         allowed_channel_id = str(bot_config.get('allowed_channel_id', ''))
+                        
                         if not all([command_name, bot_title, sheet_name]):
                             print(f"[Bot] ERROR: クイズ設定に不備があります: {bot_config}")
                             continue
+                        
                         final_callback = self._create_quiz_callback(
                             sheet_name, bot_title, allowed_channel_id
                         )
-                        # 🔽 修正 (v20): ギルド固有のコマンドとして登録
+                        
                         self.tree.add_command(
                             app_commands.Command(
                                 name=command_name,
                                 description=f"{bot_title} を開始します。",
                                 callback=final_callback 
                             ),
-                            guild=MY_GUILD  # ← ギルド固有として登録
+                            guild=MY_GUILD
                         )
                         successful_registrations += 1
+                        quiz_count += 1
                     except Exception as e:
                         print(f"[Bot] ERROR: クイズの登録に失敗: {bot_config} | Error: {e}")
+                
+                # 🔽 追加: 診断の登録
                 elif bot_type == '診断':
-                    pass 
+                    try:
+                        command_name = bot_config['command_name']
+                        bot_title = bot_config['bot_title']
+                        sheet_questions = bot_config['sheet_questions']
+                        sheet_results = bot_config['sheet_results']
+                        allowed_channel_id = str(bot_config.get('allowed_channel_id', ''))
+                        
+                        if not all([command_name, bot_title, sheet_questions, sheet_results]):
+                            print(f"[Bot] ERROR: 診断設定に不備があります: {bot_config}")
+                            continue
+                        
+                        final_callback = self._create_diagnosis_callback(
+                            sheet_questions, sheet_results, bot_title, allowed_channel_id
+                        )
+                        
+                        self.tree.add_command(
+                            app_commands.Command(
+                                name=command_name,
+                                description=f"{bot_title} を開始します。",
+                                callback=final_callback 
+                            ),
+                            guild=MY_GUILD
+                        )
+                        successful_registrations += 1
+                        diagnosis_count += 1
+                    except Exception as e:
+                        print(f"[Bot] ERROR: 診断の登録に失敗: {bot_config} | Error: {e}")
             
-            print(f"[Bot] setup_hook: {successful_registrations} 件のクイズを .tree に登録しました。")
-            print("[Bot] setup_hook: (v20) コマンドのロードが完了しました。")
+            print(f"[Bot] setup_hook: {successful_registrations} 件のコマンドを .tree に登録しました。")
+            print(f"[Bot]   - クイズ: {quiz_count} 件")
+            print(f"[Bot]   - 診断: {diagnosis_count} 件")
+            print("[Bot] setup_hook: (v21) コマンドのロードが完了しました。")
 
         except Exception as e:
             print("=================================================================")
@@ -125,9 +181,13 @@ class MyClient(discord.Client):
             traceback.print_exc()
             print("=================================================================")
     
-    async def run_quiz_command(self, interaction: discord.Interaction, sheet_name: str, bot_title: str, allowed_channel_id: str):
+    async def run_quiz_command(self, interaction: discord.Interaction, sheet_name: str, 
+                               bot_title: str, allowed_channel_id: str):
+        """クイズコマンドの実行処理"""
         try:
             await interaction.response.defer(ephemeral=True) 
+            
+            # チャンネル制限のチェック
             if allowed_channel_id and allowed_channel_id.strip() not in ['N/A', '0', '']:
                 allowed_channel_id_str = allowed_channel_id.strip()
                 if str(interaction.channel.id) != allowed_channel_id_str:
@@ -135,38 +195,136 @@ class MyClient(discord.Client):
                     try:
                         channel_id_int = int(allowed_channel_id_str)
                         target_channel = self.get_channel(channel_id_int) 
-                        if target_channel: error_message += f"（{target_channel.mention} でお試しください）"
-                        else: error_message += f"（指定されたチャンネルでお試しください）"
-                    except ValueError: error_message += f"（指定されたチャンネルでお試しください）"
+                        if target_channel: 
+                            error_message += f"（{target_channel.mention} でお試しください）"
+                        else: 
+                            error_message += f"（指定されたチャンネルでお試しください）"
+                    except ValueError: 
+                        error_message += f"（指定されたチャンネルでお試しください）"
                     await interaction.edit_original_response(content=error_message)
                     return
+            
+            # データの読み込み
             print(f"[Bot] {interaction.user.name} のために {sheet_name} の読み込みを別スレッドで開始...")
             questions_data = await asyncio.to_thread(
                 sheets_loader.get_quiz_data, sheet_name
             )
             print(f"[Bot] {sheet_name} の読み込み完了。")
+            
             if not questions_data:
                 await interaction.edit_original_response(content=f"エラー: クイズデータ（{sheet_name}）を読み込めませんでした。")
                 return
-            try: quiz_data_list = [QuizData(q) for q in questions_data]
+            
+            try: 
+                quiz_data_list = [QuizData(q) for q in questions_data]
             except Exception as e:
                 await interaction.edit_original_response(content=f"エラー: クイズデータの形式が正しくありません。(sheet: {sheet_name}): {e}")
                 return
+            
+            # 開始通知
             await interaction.channel.send(
                 f"**{interaction.user.mention} が「{bot_title}」に挑戦します！** 🎵"
             )
+            
+            # クイズ開始
             view = QuizView(quiz_data_list, bot_title)
             await view.start(interaction)
+            
         except Exception as e:
             print(f"ERROR: run_quiz_command で予期せぬエラー: {e}")
+            traceback.print_exc()
             if interaction.response.is_done():
-                try: await interaction.edit_original_response(content="予期せぬエラーが発生しました。")
-                except: pass
+                try: 
+                    await interaction.edit_original_response(content="予期せぬエラーが発生しました。")
+                except: 
+                    pass
             else:
-                try: await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)
-                except: pass
+                try: 
+                    await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)
+                except: 
+                    pass
 
-# --- ボットの実行 (v18) ---
+    # 🔽 追加: 診断コマンドの実行処理
+    async def run_diagnosis_command(self, interaction: discord.Interaction, 
+                                    sheet_questions: str, sheet_results: str,
+                                    bot_title: str, allowed_channel_id: str):
+        """診断コマンドの実行処理"""
+        try:
+            await interaction.response.defer(ephemeral=True) 
+            
+            # チャンネル制限のチェック
+            if allowed_channel_id and allowed_channel_id.strip() not in ['N/A', '0', '']:
+                allowed_channel_id_str = allowed_channel_id.strip()
+                if str(interaction.channel.id) != allowed_channel_id_str:
+                    error_message = f"このコマンド（`/{interaction.command.name}`）は、このチャンネルでは実行できません。\n"
+                    try:
+                        channel_id_int = int(allowed_channel_id_str)
+                        target_channel = self.get_channel(channel_id_int) 
+                        if target_channel: 
+                            error_message += f"（{target_channel.mention} でお試しください）"
+                        else: 
+                            error_message += f"（指定されたチャンネルでお試しください）"
+                    except ValueError: 
+                        error_message += f"（指定されたチャンネルでお試しください）"
+                    await interaction.edit_original_response(content=error_message)
+                    return
+            
+            # 質問データの読み込み
+            print(f"[Bot] {interaction.user.name} のために {sheet_questions} の読み込みを別スレッドで開始...")
+            questions_data = await asyncio.to_thread(
+                sheets_loader.get_diagnosis_data, sheet_questions
+            )
+            print(f"[Bot] {sheet_questions} の読み込み完了。")
+            
+            if not questions_data:
+                await interaction.edit_original_response(content=f"エラー: 診断データ（{sheet_questions}）を読み込めませんでした。")
+                return
+            
+            # 結果データの読み込み
+            print(f"[Bot] {interaction.user.name} のために {sheet_results} の読み込みを別スレッドで開始...")
+            results_data = await asyncio.to_thread(
+                sheets_loader.get_diagnosis_data, sheet_results
+            )
+            print(f"[Bot] {sheet_results} の読み込み完了。")
+            
+            if not results_data:
+                await interaction.edit_original_response(content=f"エラー: 診断結果データ（{sheet_results}）を読み込めませんでした。")
+                return
+            
+            # データのバリデーション
+            try: 
+                diagnosis_questions = [DiagnosisQuestion(q) for q in questions_data]
+                diagnosis_results = [DiagnosisResult(r) for r in results_data]
+            except Exception as e:
+                await interaction.edit_original_response(
+                    content=f"エラー: 診断データの形式が正しくありません。\n質問シート: {sheet_questions}\n結果シート: {sheet_results}\n詳細: {e}"
+                )
+                return
+            
+            # 開始通知
+            await interaction.channel.send(
+                f"**{interaction.user.mention} が「{bot_title}」を受けています！** 📋"
+            )
+            
+            # 診断開始
+            view = DiagnosisView(diagnosis_questions, diagnosis_results, bot_title)
+            await view.start(interaction)
+            
+        except Exception as e:
+            print(f"ERROR: run_diagnosis_command で予期せぬエラー: {e}")
+            traceback.print_exc()
+            if interaction.response.is_done():
+                try: 
+                    await interaction.edit_original_response(content="予期せぬエラーが発生しました。")
+                except: 
+                    pass
+            else:
+                try: 
+                    await interaction.response.send_message("予期せぬエラーが発生しました。", ephemeral=True)
+                except: 
+                    pass
+
+# --- ボットの実行 ---
 client = MyClient(intents=intents)
 
 @client.event
@@ -175,15 +333,14 @@ async def on_ready():
     print(f'Logged in as {client.user} (ID: {client.user.id})')
     print('------')
     
-    print("[Bot] on_ready: (v20) 処理を開始します (コマンドの同期)...")
+    print("[Bot] on_ready: (v21) 処理を開始します (コマンドの同期)...")
     try:
-        # 🔽 デバッグ: 登録されているコマンド数を確認
+        # デバッグ: 登録されているコマンド数を確認
         commands_in_tree = client.tree.get_commands(guild=MY_GUILD)
         print(f"[Bot] on_ready: tree に登録されているコマンド数: {len(commands_in_tree)}")
         
         if MY_GUILD:
             print(f"[Bot] on_ready: ギルド {GUILD_ID} にコマンドを同期します...")
-            # 🔽 修正: clear_commands() を削除（setup_hook で登録したコマンドを保持）
             synced = await client.tree.sync(guild=MY_GUILD)
             print(f"[Bot] on_ready: {len(synced)} 個のコマンドを同期しました")
         else:
@@ -191,7 +348,7 @@ async def on_ready():
             synced = await client.tree.sync()
             print(f"[Bot] on_ready: {len(synced)} 個のコマンドを同期しました")
             
-        print("[Bot] on_ready: (v20) ★★★ コマンドの同期が完了しました ★★★")
+        print("[Bot] on_ready: (v21) ★★★ コマンドの同期が完了しました ★★★")
         
     except Exception as e:
         print("=================================================================")
@@ -200,23 +357,22 @@ async def on_ready():
         traceback.print_exc()
         print("=================================================================")
 
-# 🔽 --- 修正 (v18): Threading で Flask を起動し、ボットをメインループで実行 --- 🔽
+# --- Flask を daemon thread で起動し、ボットをメインループで実行 ---
 async def main():
     """
     Flask サーバーを daemon thread で起動し、
     ボットをメイン asyncio ループで実行する
     """
-    print("[Main] (v20) Flask を daemon thread で起動し、ボットをメインループで実行します...")
+    print("[Main] (v21) Flask を daemon thread で起動し、ボットをメインループで実行します...")
     
     # Flask を別スレッドで起動（daemon=True で、ボット終了時に自動終了）
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
-    print("[Main] (v20) Flask サーバーを起動しました。")
+    print("[Main] (v21) Flask サーバーを起動しました。")
     
     # ボットをメインループで実行
     async with client:
         await client.start(TOKEN)
-# 🔼 --- 修正 (v18) ここまで --- 🔼
 
 if __name__ == "__main__":
     try:
