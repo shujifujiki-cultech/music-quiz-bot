@@ -41,6 +41,7 @@ class DiagnosisResult:
         self.weakness = record.get('weakness', '')
         self.advice = record.get('advice', '')
         self.image_url = record.get('image_url', '')
+        self.youtube_url = record.get('youtube_url', '')  # 🔽 追加: YouTube動画URL
         
         # バリデーション
         if not all([self.type_code, self.type_name, self.conditions]):
@@ -251,9 +252,14 @@ class DiagnosisView(discord.ui.View):
             )
         
         if result.advice:
+            # 🔽 修正: YouTube動画URLがある場合、adviceの最後に追加
+            advice_text = result.advice
+            if result.youtube_url and result.youtube_url.strip():
+                advice_text += f"\n\n📺 **参考動画はこちら:**\n{result.youtube_url}"
+            
             result_embed.add_field(
                 name="📝 アドバイス",
-                value=result.advice,
+                value=advice_text,
                 inline=False
             )
         
