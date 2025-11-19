@@ -185,7 +185,8 @@ class MyClient(discord.Client):
                                bot_title: str, allowed_channel_id: str):
         """クイズコマンドの実行処理"""
         try:
-            await interaction.response.defer(ephemeral=True) 
+            # 🔽 修正: 公開でdefer（公開メッセージを先に表示するため）
+            await interaction.response.defer(ephemeral=False) 
             
             # チャンネル制限のチェック
             if allowed_channel_id and allowed_channel_id.strip() not in ['N/A', '0', '']:
@@ -221,14 +222,14 @@ class MyClient(discord.Client):
                 await interaction.edit_original_response(content=f"エラー: クイズデータの形式が正しくありません。(sheet: {sheet_name}): {e}")
                 return
             
-            # 開始通知
-            await interaction.channel.send(
-                f"**{interaction.user.mention} が「{bot_title}」に挑戦します！** 🎵"
+            # 🔽 修正: 公開メッセージを edit_original_response で送信
+            await interaction.edit_original_response(
+                content=f"**{interaction.user.mention} が「{bot_title}」に挑戦します！** 🎵"
             )
             
-            # クイズ開始
+            # 🔽 修正: クイズセッションを followup で開始（ephemeral）
             view = QuizView(quiz_data_list, bot_title)
-            await view.start(interaction)
+            await view.start_with_followup(interaction)
             
         except Exception as e:
             print(f"ERROR: run_quiz_command で予期せぬエラー: {e}")
@@ -250,7 +251,8 @@ class MyClient(discord.Client):
                                     bot_title: str, allowed_channel_id: str):
         """診断コマンドの実行処理"""
         try:
-            await interaction.response.defer(ephemeral=True) 
+            # 🔽 修正: 公開でdefer（公開メッセージを先に表示するため）
+            await interaction.response.defer(ephemeral=False) 
             
             # チャンネル制限のチェック
             if allowed_channel_id and allowed_channel_id.strip() not in ['N/A', '0', '']:
@@ -301,14 +303,14 @@ class MyClient(discord.Client):
                 )
                 return
             
-            # 開始通知
-            await interaction.channel.send(
-                f"**{interaction.user.mention} が「{bot_title}」を受けています！** 📋"
+            # 🔽 修正: 公開メッセージを edit_original_response で送信
+            await interaction.edit_original_response(
+                content=f"**{interaction.user.mention} が「{bot_title}」を受けています！** 📋"
             )
             
-            # 診断開始
+            # 🔽 修正: 診断セッションを followup で開始（ephemeral）
             view = DiagnosisView(diagnosis_questions, diagnosis_results, bot_title)
-            await view.start(interaction)
+            await view.start_with_followup(interaction)
             
         except Exception as e:
             print(f"ERROR: run_diagnosis_command で予期せぬエラー: {e}")

@@ -62,6 +62,7 @@ class DiagnosisView(discord.ui.View):
         # View 自身が状態を持つ
         self.current_question_index = 0
         self.interaction = None  # start() で interaction を保持
+        self.followup_message = None  # 🔽 追加: followup メッセージを保持
         
         # スコア集計用の辞書（各コードのカウント）
         # 例: {'U': 3, 'u': 3, 'L': 4, 'l': 2}
@@ -70,12 +71,24 @@ class DiagnosisView(discord.ui.View):
     async def start(self, interaction: discord.Interaction):
         """
         診断の開始（bot.pyから呼び出される）
+        従来の方式: edit_original_response を使用
         """
         self.interaction = interaction
         # コマンド名とIDを取得
         self.command_name = interaction.command.name if interaction.command else "diagnosis"
         self.command_id = interaction.data.get('id', '0') if hasattr(interaction, 'data') else '0'
         await self.show_question()
+
+    # 🔽 追加: followup でセッションを開始する新しいメソッド
+    async def start_with_followup(self, interaction: discord.Interaction):
+        """
+        診断の開始（followup版）
+        公開メッセージの後にephemeralセッションを開始する際に使用
+        """
+        self.interaction = interaction
+        self.command_name = interaction.command.name if interaction.command else "diagnosis"
+        self.command_id = interaction.data.get('id', '0') if hasattr(interaction, 'data') else '0'
+        await self.show_question_with_followup()
 
     def create_embed(self, question: DiagnosisQuestion):
         """
@@ -121,12 +134,34 @@ class DiagnosisView(discord.ui.View):
     async def show_question(self):
         """
         現在の質問を表示し、ボタンを更新する
+        従来の方式: edit_original_response を使用
         """
         question = self.questions[self.current_question_index]
         embed = self.create_embed(question)
         self.update_buttons(question)
         
         await self.interaction.edit_original_response(embed=embed, view=self)
+
+    # 🔽 追加: followup でセッションを表示する新しいメソッド
+    async def show_question_with_followup(self):
+        """
+        現在の質問を表示（followup版）
+        """
+        question = self.questions[self.current_question_index]
+        embed = self.create_embed(question)
+        self.update_buttons(question)
+        
+        if self.followup_message is None:
+            # 最初の質問: followup.send で送信
+            self.followup_message = await self.interaction.followup.send(
+                embed=embed,
+                view=self,
+                ephemeral=True,
+                wait=True
+            )
+        else:
+            # 2問目以降: followup メッセージを編集
+            await self.followup_message.edit(embed=embed, view=self)
 
     async def button_callback(self, interaction: discord.Interaction):
         """
@@ -164,7 +199,10 @@ class DiagnosisView(discord.ui.View):
         # 次の質問へ
         self.current_question_index += 1
         if self.current_question_index < len(self.questions):
-            await self.show_question()
+            if self.followup_message:
+                await self.show_question_with_followup()
+            else:
+                await self.show_question()
         else:
             await self.show_result()
 
@@ -263,7 +301,12 @@ class DiagnosisView(discord.ui.View):
         #     result_embed.set_thumbnail(url=result.image_url)
         
         self.clear_items()  # 全てのボタンを削除
-        await self.interaction.edit_original_response(embed=result_embed, view=self)
+        
+        # 🔽 修正: followup_message がある場合はそれを編集
+        if self.followup_message:
+            await self.followup_message.edit(embed=result_embed, view=self)
+        else:
+            await self.interaction.edit_original_response(embed=result_embed, view=self)
         
         # 🔽 追加: YouTube動画URLがある場合、別メッセージとして送信（Discord内で埋め込み表示）
         if result.youtube_url and result.youtube_url.strip():
@@ -288,6 +331,9 @@ class DiagnosisView(discord.ui.View):
         )
         
         try:
-            await self.interaction.edit_original_response(embed=timeout_embed, view=self)
+            if self.followup_message:
+                await self.followup_message.edit(embed=timeout_embed, view=self)
+            else:
+                await self.interaction.edit_original_response(embed=timeout_embed, view=self)
         except:
             pass  # メッセージが削除されている場合などのエラーを無視

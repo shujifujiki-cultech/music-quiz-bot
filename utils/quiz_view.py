@@ -1,5 +1,5 @@
 # クイズ用の共通Viewクラス
-# (v2.5: 待機時間2秒 + 復習機能 + タイムアウト処理 + クリック可能なコマンド - コマンドID取得方法改善)
+# (v2.6: 公開メッセージ後にephemeralセッション開始対応 + 待機時間2秒 + 復習機能 + タイムアウト処理 + クリック可能なコマンド)
 
 import discord
 import random
@@ -54,6 +54,7 @@ class QuizView(discord.ui.View):
         self.current_question_index = 0
         self.correct_count = 0
         self.interaction = None # start() で interaction を保持する
+        self.followup_message = None # 🔽 追加: followup メッセージを保持
         
         # 🔽 復習機能 (v2): 各問題の結果を記録
         self.results_history = []  # 各問題の結果を保存するリスト
@@ -61,13 +62,23 @@ class QuizView(discord.ui.View):
     async def start(self, interaction: discord.Interaction):
         """
         クイズの開始（bot.pyから呼び出される）
+        従来の方式: edit_original_response を使用
         """
         self.interaction = interaction # 親となる interaction を保持
-        # 🔽 v2.5: コマンド名とIDを安全に取得
         self.command_name = interaction.command.name if interaction.command else "quiz"
-        # コマンドIDは interaction.data から取得（より安全）
         self.command_id = interaction.data.get('id', '0') if hasattr(interaction, 'data') else '0'
         await self.show_question()
+
+    # 🔽 追加: followup でセッションを開始する新しいメソッド
+    async def start_with_followup(self, interaction: discord.Interaction):
+        """
+        クイズの開始（followup版）
+        公開メッセージの後にephemeralセッションを開始する際に使用
+        """
+        self.interaction = interaction
+        self.command_name = interaction.command.name if interaction.command else "quiz"
+        self.command_id = interaction.data.get('id', '0') if hasattr(interaction, 'data') else '0'
+        await self.show_question_with_followup()
 
     def create_embed(self, question: QuizData):
         """
@@ -100,14 +111,34 @@ class QuizView(discord.ui.View):
     async def show_question(self):
         """
         現在の質問を表示し、ボタンを更新する
+        従来の方式: edit_original_response を使用
         """
         question = self.questions[self.current_question_index]
         embed = self.create_embed(question)
         self.update_buttons(question)
         
-        # 最初の質問(index=0)でも、2問目以降でも、
-        # bot.py で defer された元の (ephemeral) メッセージを「編集」する
         await self.interaction.edit_original_response(embed=embed, view=self)
+
+    # 🔽 追加: followup でセッションを表示する新しいメソッド
+    async def show_question_with_followup(self):
+        """
+        現在の質問を表示（followup版）
+        """
+        question = self.questions[self.current_question_index]
+        embed = self.create_embed(question)
+        self.update_buttons(question)
+        
+        if self.followup_message is None:
+            # 最初の質問: followup.send で送信
+            self.followup_message = await self.interaction.followup.send(
+                embed=embed,
+                view=self,
+                ephemeral=True,
+                wait=True
+            )
+        else:
+            # 2問目以降: followup メッセージを編集
+            await self.followup_message.edit(embed=embed, view=self)
 
     async def button_callback(self, interaction: discord.Interaction):
         """
@@ -168,7 +199,12 @@ class QuizView(discord.ui.View):
         # ボタンを無効化してメッセージを編集 (質問Embed + 結果Embed の2つを表示)
         for item in self.children:
             item.disabled = True
-        await interaction.edit_original_response(embeds=[self.create_embed(question), result_embed], view=self)
+        
+        # 🔽 修正: followup_message がある場合はそれを編集
+        if self.followup_message:
+            await self.followup_message.edit(embeds=[self.create_embed(question), result_embed], view=self)
+        else:
+            await interaction.edit_original_response(embeds=[self.create_embed(question), result_embed], view=self)
 
         # 🔽 待機時間調整 (v2.1): 2秒に設定
         await asyncio.sleep(2.0)
@@ -176,7 +212,10 @@ class QuizView(discord.ui.View):
         # 次の問題へ
         self.current_question_index += 1
         if self.current_question_index < len(self.questions):
-            await self.show_question() # 修正された self.interaction を使って編集
+            if self.followup_message:
+                await self.show_question_with_followup()
+            else:
+                await self.show_question()
         else:
             await self.show_result() # 全問終了
 
@@ -212,7 +251,12 @@ class QuizView(discord.ui.View):
         )
         
         self.clear_items() # 全てのボタンを削除
-        await self.interaction.edit_original_response(embed=result_embed, view=self)
+        
+        # 🔽 修正: followup_message がある場合はそれを編集
+        if self.followup_message:
+            await self.followup_message.edit(embed=result_embed, view=self)
+        else:
+            await self.interaction.edit_original_response(embed=result_embed, view=self)
         
         # 🔽 復習機能 (v2): 全問題の詳細を表示
         await self.show_review()
@@ -281,6 +325,9 @@ class QuizView(discord.ui.View):
         )
         
         try:
-            await self.interaction.edit_original_response(embed=timeout_embed, view=self)
+            if self.followup_message:
+                await self.followup_message.edit(embed=timeout_embed, view=self)
+            else:
+                await self.interaction.edit_original_response(embed=timeout_embed, view=self)
         except:
             pass  # メッセージが削除されている場合などのエラーを無視
