@@ -1,15 +1,16 @@
 # クイズ用の共通Viewクラス
-# (v2.6: 公開メッセージ後にephemeralセッション開始対応 + 待機時間2秒 + 復習機能 + タイムアウト処理 + クリック可能なコマンド)
+# (v2.7: 音声・画像対応 + 公開メッセージ後にephemeralセッション開始対応 + 待機時間2秒 + 復習機能 + タイムアウト処理 + クリック可能なコマンド)
 
 import discord
 import random
 import asyncio 
 
-# 🔽 --- (新規追加) スプレッドシートのデータを扱うためのクラス --- 🔽
+# 🔽 --- スプレッドシートのデータを扱うためのクラス (v2.7: 音声・画像対応) --- 🔽
 class QuizData:
     """
     スプレッドシートの1行（1問）のデータを格納するクラス
     bot.py がこのクラスのリストを作成して QuizView に渡します
+    (v2.7: 音声・画像対応)
     """
     def __init__(self, record: dict):
         # record は {'question_text': '問題文', 'option_1': '選択肢1', ...} のような辞書
@@ -26,6 +27,23 @@ class QuizData:
             else:
                 break # option_N が途切れたら終了
         
+        # 🔽 新規追加: 画像URL (option_1_image, option_2_image, ...) を動的に収集
+        self.option_images = []
+        for i in range(1, len(self.options) + 1):
+            img_url = record.get(f'option_{i}_image')
+            # 画像URLが設定されていない場合は None
+            if img_url and str(img_url).strip() != "":
+                self.option_images.append(str(img_url).strip())
+            else:
+                self.option_images.append(None)
+        
+        # 🔽 新規追加: 音声URL
+        self.audio_url = record.get('audio_url')
+        if self.audio_url and str(self.audio_url).strip() != "":
+            self.audio_url = str(self.audio_url).strip()
+        else:
+            self.audio_url = None
+        
         self.correct_answer = str(record.get('correct_answer'))
         self.explanation = record.get('explanation')
         
@@ -40,10 +58,32 @@ class QuizData:
                 raise ValueError(f"正解番号 '{self.correct_answer}' が選択肢の範囲外です (ID: {self.question_id})")
         except ValueError:
             raise ValueError(f"正解番号 '{self.correct_answer}' が数字ではありません (ID: {self.question_id})")
+    
+    @staticmethod
+    def _convert_gdrive_url(url: str) -> str:
+        """
+        GoogleドライブのURLを埋め込み可能な形式に変換
+        例: https://drive.google.com/file/d/FILE_ID/view
+        → https://drive.google.com/uc?export=view&id=FILE_ID
+        """
+        if not url or 'drive.google.com' not in url:
+            return url
+        
+        # file/d/FILE_ID/view 形式の場合
+        if '/file/d/' in url:
+            try:
+                file_id = url.split('/file/d/')[1].split('/')[0]
+                # ?usp=sharing などのパラメータを削除
+                file_id = file_id.split('?')[0]
+                return f"https://drive.google.com/uc?export=view&id={file_id}"
+            except:
+                return url
+        
+        return url
 
-# 🔽 --- QuizView クラスをスプレッドシート対応に修正 --- 🔽
+# 🔽 --- QuizView クラスをスプレッドシート対応に修正 (v2.7: 音声・画像対応) --- 🔽
 class QuizView(discord.ui.View):
-    """クイズ用の共通Viewクラス (スプレッドシート連携版)"""
+    """クイズ用の共通Viewクラス (スプレッドシート連携版 + 音声・画像対応)"""
 
     def __init__(self, questions: list[QuizData], bot_title: str):
         super().__init__(timeout=300.0) # 5分でタイムアウト
@@ -83,25 +123,59 @@ class QuizView(discord.ui.View):
     def create_embed(self, question: QuizData):
         """
         質問のEmbed（埋め込みメッセージ）を作成する
+        (v2.7: 音声・画像対応)
         """
         embed = discord.Embed(
             title=f"【{self.bot_title}】 - 第{self.current_question_index + 1}問",
             description=f"**{question.question_text}**",
             color=discord.Color.blue()
         )
+        
+        # 🔽 音声がある場合はリンクを表示
+        if question.audio_url:
+            converted_url = QuizData._convert_gdrive_url(question.audio_url)
+            embed.add_field(
+                name="🎵 音声を再生",
+                value=f"[ここをクリックして音声を聞く]({converted_url})",
+                inline=False
+            )
+        
+        # 🔽 画像がある場合は各選択肢に画像を表示
+        has_images = any(img for img in question.option_images)
+        if has_images:
+            for i, (option_text, img_url) in enumerate(zip(question.options, question.option_images)):
+                if img_url:
+                    converted_url = QuizData._convert_gdrive_url(img_url)
+                    embed.add_field(
+                        name=f"選択肢 {i+1}",
+                        value=f"[画像を見る]({converted_url})",
+                        inline=True
+                    )
+        
         embed.set_footer(text=f"全{len(self.questions)}問 | 正解数: {self.correct_count}")
         return embed
 
     def update_buttons(self, question: QuizData):
         """
         質問に合わせてボタン（選択肢）を動的に作成・更新する
+        (v2.7: 画像がある場合はA/B/C/Dボタンに変更)
         """
         self.clear_items() # 既存のボタンをクリア
+        
+        # 🔽 画像があるかどうかを判定
+        has_images = any(img for img in question.option_images)
 
         # 選択肢の数だけボタンを作成
         for i, option_text in enumerate(question.options):
+            # 画像がある場合はA/B/C/Dラベル、ない場合はテキストラベル
+            if has_images:
+                label_map = {0: "A", 1: "B", 2: "C", 3: "D", 4: "E", 5: "F", 6: "G", 7: "H", 8: "I"}
+                label = label_map.get(i, str(i+1))
+            else:
+                label = option_text
+            
             button = discord.ui.Button(
-                label=f"{option_text}", # スプレッドシートの選択肢テキストをそのままラベルに
+                label=label,
                 style=discord.ButtonStyle.secondary,
                 custom_id=f"answer_{i+1}" # custom_id に選択肢番号(1始まり)を設定
             )
@@ -143,6 +217,7 @@ class QuizView(discord.ui.View):
     async def button_callback(self, interaction: discord.Interaction):
         """
         いずれかの選択肢ボタンが押されたときの処理
+        (v2.7: 画像のみの場合は「選択肢X」と表示)
         """
         
         # 🔽 タイムアウトチェック (v2.4)
@@ -181,10 +256,19 @@ class QuizView(discord.ui.View):
             description=f"**解説:**\n{question.explanation}",
             color=color
         )
+        
         # 正解の選択肢テキストを取得
         correct_index = int(question.correct_answer) - 1
         correct_text = question.options[correct_index]
-        result_embed.add_field(name="正解", value=f"{correct_text}")
+        
+        # 🔽 画像のみの場合は「選択肢X」と表示
+        has_images = any(img for img in question.option_images)
+        if has_images:
+            label_map = {0: "A", 1: "B", 2: "C", 3: "D", 4: "E", 5: "F", 6: "G", 7: "H", 8: "I"}
+            correct_label = label_map.get(correct_index, str(correct_index+1))
+            result_embed.add_field(name="正解", value=f"選択肢 {correct_label}")
+        else:
+            result_embed.add_field(name="正解", value=f"{correct_text}")
 
         # 🔽 復習機能 (v2): 結果を記録
         self.results_history.append({
