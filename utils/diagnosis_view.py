@@ -252,14 +252,9 @@ class DiagnosisView(discord.ui.View):
             )
         
         if result.advice:
-            # 🔽 修正: YouTube動画URLがある場合、adviceの最後に追加
-            advice_text = result.advice
-            if result.youtube_url and result.youtube_url.strip():
-                advice_text += f"\n\n📺 **参考動画はこちら:**\n{result.youtube_url}"
-            
             result_embed.add_field(
                 name="📝 アドバイス",
-                value=advice_text,
+                value=result.advice,
                 inline=False
             )
         
@@ -269,6 +264,13 @@ class DiagnosisView(discord.ui.View):
         
         self.clear_items()  # 全てのボタンを削除
         await self.interaction.edit_original_response(embed=result_embed, view=self)
+        
+        # 🔽 追加: YouTube動画URLがある場合、別メッセージとして送信（Discord内で埋め込み表示）
+        if result.youtube_url and result.youtube_url.strip():
+            await self.interaction.followup.send(
+                f"📺 **参考動画はこちら:**\n{result.youtube_url}",
+                ephemeral=True  # 本人のみに表示
+            )
         
         self.stop()  # Viewを終了
     
