@@ -1,21 +1,23 @@
 # クイズ用の共通Viewクラス
-# (v2.7: 音声・画像対応 + 公開メッセージ後にephemeralセッション開始対応 + 待機時間2秒 + 復習機能 + タイムアウト処理 + クリック可能なコマンド)
+# (v2.9: 音声ファイル直接添付 + Discord内で音声・画像を直接表示 + 公開メッセージ後にephemeralセッション開始対応 + 待機時間2秒 + 復習機能 + タイムアウト処理 + クリック可能なコマンド)
 
 import discord
 import random
-import asyncio 
+import asyncio
+import aiohttp  # 非同期HTTPリクエスト用
+import io  # BytesIO用 
 
-# 🔽 --- スプレッドシートのデータを扱うためのクラス (v2.7: 音声・画像対応) --- 🔽
+# 🔽 --- スプレッドシートのデータを扱うためのクラス (v2.8: Discord内で音声・画像を直接表示) --- 🔽
 class QuizData:
     """
     スプレッドシートの1行（1問）のデータを格納するクラス
     bot.py がこのクラスのリストを作成して QuizView に渡します
-    (v2.7: 音声・画像対応)
+    (v2.8: Discord内で音声・画像を直接表示)
     """
     def __init__(self, record: dict):
-        # record は {'question_text': '問題文', 'option_1': '選択肢1', ...} のような辞書
+        # record は {'text': '問題文', 'option_1': '選択肢1', ...} のような辞書
         self.question_id = record.get('question_id', 'N/A')
-        self.question_text = record.get('question_text')
+        self.question_text = record.get('text')  # スプレッドシートのカラム名は 'text'
         
         # 選択肢 (option_1, option_2, ...) を動的に収集
         self.options = []
@@ -81,9 +83,9 @@ class QuizData:
         
         return url
 
-# 🔽 --- QuizView クラスをスプレッドシート対応に修正 (v2.7: 音声・画像対応) --- 🔽
+# 🔽 --- QuizView クラスをスプレッドシート対応に修正 (v2.8: Discord内で音声・画像を直接表示) --- 🔽
 class QuizView(discord.ui.View):
-    """クイズ用の共通Viewクラス (スプレッドシート連携版 + 音声・画像対応)"""
+    """クイズ用の共通Viewクラス (スプレッドシート連携版 + Discord内で音声・画像を直接表示)"""
 
     def __init__(self, questions: list[QuizData], bot_title: str):
         super().__init__(timeout=300.0) # 5分でタイムアウト
@@ -119,41 +121,67 @@ class QuizView(discord.ui.View):
         self.command_name = interaction.command.name if interaction.command else "quiz"
         self.command_id = interaction.data.get('id', '0') if hasattr(interaction, 'data') else '0'
         await self.show_question_with_followup()
+    
+    async def download_audio_file(self, audio_url: str):
+        """
+        音声URLから音声ファイルをダウンロードしてdiscord.Fileオブジェクトを返す
+        (v2.9: ephemeralメッセージ内で音声を再生するため)
+        """
+        try:
+            # Googleドライブ URL を変換
+            converted_url = QuizData._convert_gdrive_url(audio_url)
+            
+            # 非同期でファイルをダウンロード
+            async with aiohttp.ClientSession() as session:
+                async with session.get(converted_url) as response:
+                    if response.status == 200:
+                        audio_data = await response.read()
+                        # ファイル名をURLから取得（なければデフォルト）
+                        filename = "audio.mp3"
+                        if "/" in audio_url:
+                            filename = audio_url.split("/")[-1].split("?")[0]
+                        
+                        # BytesIOオブジェクトを作成
+                        audio_bytes = io.BytesIO(audio_data)
+                        return discord.File(audio_bytes, filename=filename)
+            return None
+        except Exception as e:
+            print(f"[QuizView] 音声ファイルのダウンロードに失敗: {e}")
+            return None
 
     def create_embed(self, question: QuizData):
         """
-        質問のEmbed（埋め込みメッセージ）を作成する
-        (v2.7: 音声・画像対応)
+        質問のメインEmbed（埋め込みメッセージ）を作成する
+        (v2.7: 音声・画像は別途処理)
         """
         embed = discord.Embed(
             title=f"【{self.bot_title}】 - 第{self.current_question_index + 1}問",
             description=f"**{question.question_text}**",
             color=discord.Color.blue()
         )
-        
-        # 🔽 音声がある場合はリンクを表示
-        if question.audio_url:
-            converted_url = QuizData._convert_gdrive_url(question.audio_url)
-            embed.add_field(
-                name="🎵 音声を再生",
-                value=f"[ここをクリックして音声を聞く]({converted_url})",
-                inline=False
-            )
-        
-        # 🔽 画像がある場合は各選択肢に画像を表示
+        embed.set_footer(text=f"全{len(self.questions)}問 | 正解数: {self.correct_count}")
+        return embed
+    
+    def create_image_embeds(self, question: QuizData):
+        """
+        画像がある場合、各選択肢用のEmbedを作成する
+        (v2.8: Discord内で画像を直接表示)
+        """
+        image_embeds = []
         has_images = any(img for img in question.option_images)
+        
         if has_images:
+            label_map = {0: "A", 1: "B", 2: "C", 3: "D", 4: "E", 5: "F", 6: "G", 7: "H", 8: "I"}
+            
             for i, (option_text, img_url) in enumerate(zip(question.options, question.option_images)):
                 if img_url:
                     converted_url = QuizData._convert_gdrive_url(img_url)
-                    embed.add_field(
-                        name=f"選択肢 {i+1}",
-                        value=f"[画像を見る]({converted_url})",
-                        inline=True
-                    )
+                    embed = discord.Embed(color=discord.Color.blue())
+                    embed.set_author(name=f"選択肢 {label_map.get(i, str(i+1))}: {option_text}")
+                    embed.set_image(url=converted_url)
+                    image_embeds.append(embed)
         
-        embed.set_footer(text=f"全{len(self.questions)}問 | 正解数: {self.correct_count}")
-        return embed
+        return image_embeds
 
     def update_buttons(self, question: QuizData):
         """
@@ -186,33 +214,66 @@ class QuizView(discord.ui.View):
         """
         現在の質問を表示し、ボタンを更新する
         従来の方式: edit_original_response を使用
+        (v2.8: 音声はcontent、画像はEmbedで表示)
         """
         question = self.questions[self.current_question_index]
-        embed = self.create_embed(question)
+        main_embed = self.create_embed(question)
+        image_embeds = self.create_image_embeds(question)
         self.update_buttons(question)
         
-        await self.interaction.edit_original_response(embed=embed, view=self)
+        # 音声URLがある場合はメッセージcontentに含める
+        audio_content = None
+        if question.audio_url:
+            converted_url = QuizData._convert_gdrive_url(question.audio_url)
+            audio_content = f"🎵 **音声を再生:**\n{converted_url}"
+        
+        # すべてのEmbedを結合
+        all_embeds = [main_embed] + image_embeds
+        
+        await self.interaction.edit_original_response(
+            content=audio_content,
+            embeds=all_embeds,
+            view=self
+        )
 
     # 🔽 追加: followup でセッションを表示する新しいメソッド
     async def show_question_with_followup(self):
         """
         現在の質問を表示（followup版）
+        (v2.9: 音声ファイルを直接添付、各問題ごとに新しいメッセージ送信)
         """
         question = self.questions[self.current_question_index]
-        embed = self.create_embed(question)
+        main_embed = self.create_embed(question)
+        image_embeds = self.create_image_embeds(question)
         self.update_buttons(question)
         
-        if self.followup_message is None:
-            # 最初の質問: followup.send で送信
-            self.followup_message = await self.interaction.followup.send(
-                embed=embed,
-                view=self,
-                ephemeral=True,
-                wait=True
-            )
-        else:
-            # 2問目以降: followup メッセージを編集
-            await self.followup_message.edit(embed=embed, view=self)
+        # すべてのEmbedを結合（メインEmbed + 画像Embeds）
+        all_embeds = [main_embed] + image_embeds
+        
+        # 音声ファイルがある場合はダウンロードして添付
+        audio_file = None
+        audio_content = None
+        if question.audio_url:
+            audio_file = await self.download_audio_file(question.audio_url)
+            if audio_file:
+                audio_content = "🎵 **音声を再生:**"
+        
+        # 前のメッセージがある場合は削除（見た目をすっきりさせる）
+        if self.followup_message is not None:
+            try:
+                await self.followup_message.delete()
+            except:
+                pass  # 削除に失敗しても続行
+        
+        # 新しいメッセージを送信
+        self.followup_message = await self.interaction.followup.send(
+            content=audio_content,
+            file=audio_file,
+            embeds=all_embeds,
+            view=self,
+            ephemeral=True,
+            wait=True
+        )
 
     async def button_callback(self, interaction: discord.Interaction):
         """
@@ -280,15 +341,20 @@ class QuizView(discord.ui.View):
             'explanation': question.explanation
         })
 
-        # ボタンを無効化してメッセージを編集 (質問Embed + 結果Embed の2つを表示)
+        # ボタンを無効化してメッセージを編集 (質問Embed + 結果Embed + 画像Embeds)
+        # (v2.9: 音声ファイルは最初に添付されているのでそのまま残る)
         for item in self.children:
             item.disabled = True
         
-        # 🔽 修正: followup_message がある場合はそれを編集
+        main_embed = self.create_embed(question)
+        image_embeds = self.create_image_embeds(question)
+        all_embeds = [main_embed] + image_embeds + [result_embed]
+        
+        # 🔽 修正: followup_message を編集（音声ファイルはそのまま）
         if self.followup_message:
-            await self.followup_message.edit(embeds=[self.create_embed(question), result_embed], view=self)
+            await self.followup_message.edit(embeds=all_embeds, view=self)
         else:
-            await interaction.edit_original_response(embeds=[self.create_embed(question), result_embed], view=self)
+            await interaction.edit_original_response(embeds=all_embeds, view=self)
 
         # 🔽 待機時間調整 (v2.1): 2秒に設定
         await asyncio.sleep(2.0)
@@ -336,11 +402,11 @@ class QuizView(discord.ui.View):
         
         self.clear_items() # 全てのボタンを削除
         
-        # 🔽 修正: followup_message がある場合はそれを編集
+        # 🔽 修正: followup_message がある場合はそれを編集（contentをクリア）
         if self.followup_message:
-            await self.followup_message.edit(embed=result_embed, view=self)
+            await self.followup_message.edit(content=None, embeds=[result_embed], view=self)
         else:
-            await self.interaction.edit_original_response(embed=result_embed, view=self)
+            await self.interaction.edit_original_response(content=None, embeds=[result_embed], view=self)
         
         # 🔽 復習機能 (v2): 全問題の詳細を表示
         await self.show_review()
@@ -410,8 +476,8 @@ class QuizView(discord.ui.View):
         
         try:
             if self.followup_message:
-                await self.followup_message.edit(embed=timeout_embed, view=self)
+                await self.followup_message.edit(content=None, embeds=[timeout_embed], view=self)
             else:
-                await self.interaction.edit_original_response(embed=timeout_embed, view=self)
+                await self.interaction.edit_original_response(content=None, embeds=[timeout_embed], view=self)
         except:
             pass  # メッセージが削除されている場合などのエラーを無視
