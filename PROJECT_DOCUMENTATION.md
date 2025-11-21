@@ -1133,7 +1133,7 @@ GUILD_ID=your_guild_id_here
 
 ### 連絡先
 
-**プロジェクトオーナー:** 藤川修爾CEO  
+**プロジェクトオーナー:** 藤木修爾CEO  
 **プロジェクト:** CULTECH Corporation  
 
 ---

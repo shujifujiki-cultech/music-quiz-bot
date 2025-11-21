@@ -236,11 +236,10 @@ class QuizView(discord.ui.View):
             view=self
         )
 
-    # 🔽 追加: followup でセッションを表示する新しいメソッド
     async def show_question_with_followup(self):
         """
         現在の質問を表示（followup版）
-        (v2.9: 音声ファイルを直接添付、各問題ごとに新しいメッセージ送信)
+        (v3.1: 音声の有無で処理を分岐し、「読み込めませんでした」エラーを防ぐ)
         """
         question = self.questions[self.current_question_index]
         main_embed = self.create_embed(question)
@@ -250,30 +249,77 @@ class QuizView(discord.ui.View):
         # すべてのEmbedを結合（メインEmbed + 画像Embeds）
         all_embeds = [main_embed] + image_embeds
         
-        # 音声ファイルがある場合はダウンロードして添付
+        # 音声ファイルの処理
         audio_file = None
         audio_content = None
+        has_audio = False
+        
+        # audio_url が存在し、かつ空でない場合のみダウンロードを試みる
         if question.audio_url:
             audio_file = await self.download_audio_file(question.audio_url)
             if audio_file:
                 audio_content = "🎵 **音声を再生:**"
+                has_audio = True
         
-        # 前のメッセージがある場合は削除（見た目をすっきりさせる）
-        if self.followup_message is not None:
-            try:
-                await self.followup_message.delete()
-            except:
-                pass  # 削除に失敗しても続行
-        
-        # 新しいメッセージを送信
-        self.followup_message = await self.interaction.followup.send(
-            content=audio_content,
-            file=audio_file,
-            embeds=all_embeds,
-            view=self,
-            ephemeral=True,
-            wait=True
-        )
+        # 🔽 重要な修正: 音声の有無で処理を分岐
+        if self.followup_message is None:
+            # 最初の質問: 新しいメッセージを送信
+            if has_audio:
+                self.followup_message = await self.interaction.followup.send(
+                    content=audio_content,
+                    file=audio_file,
+                    embeds=all_embeds,
+                    view=self,
+                    ephemeral=True,
+                    wait=True
+                )
+            else:
+                self.followup_message = await self.interaction.followup.send(
+                    embeds=all_embeds,
+                    view=self,
+                    ephemeral=True,
+                    wait=True
+                )
+        else:
+            # 2問目以降の処理
+            if has_audio:
+                # 音声がある場合: 古いメッセージを編集してボタンを無効化し、
+                # 新しいメッセージを送信（この方法で「読み込めませんでした」を回避）
+                try:
+                    # 前のメッセージのボタンを無効化（削除はしない）
+                    for item in self.children:
+                        item.disabled = True
+                    await self.followup_message.edit(view=self)
+                    # ボタンを再度有効化
+                    self.update_buttons(question)
+                except:
+                    pass
+                
+                # 新しいメッセージを送信
+                self.followup_message = await self.interaction.followup.send(
+                    content=audio_content,
+                    file=audio_file,
+                    embeds=all_embeds,
+                    view=self,
+                    ephemeral=True,
+                    wait=True
+                )
+            else:
+                # 音声がない場合: 既存のメッセージを編集
+                try:
+                    await self.followup_message.edit(
+                        content=None,
+                        embeds=all_embeds,
+                        view=self
+                    )
+                except discord.errors.NotFound:
+                    # メッセージが見つからない場合は新規送信
+                    self.followup_message = await self.interaction.followup.send(
+                        embeds=all_embeds,
+                        view=self,
+                        ephemeral=True,
+                        wait=True
+                    )
 
     async def button_callback(self, interaction: discord.Interaction):
         """
