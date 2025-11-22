@@ -8,36 +8,49 @@ import aiohttp  # 非同期HTTPリクエスト用
 import io  # BytesIO用 
 
 # 🔽 --- スプレッドシートのデータを扱うためのクラス (v2.8: Discord内で音声・画像を直接表示) --- 🔽
+# QuizData クラスの __init__ メソッド修正版
+# quiz_view.py の QuizData クラス全体をこれに置き換えてください
+
 class QuizData:
     """
     スプレッドシートの1行（1問）のデータを格納するクラス
     bot.py がこのクラスのリストを作成して QuizView に渡します
-    (v2.8: Discord内で音声・画像を直接表示)
+    (v3.2: 画像のみの選択肢に対応)
     """
     def __init__(self, record: dict):
         # record は {'text': '問題文', 'option_1': '選択肢1', ...} のような辞書
         self.question_id = record.get('question_id', 'N/A')
         self.question_text = record.get('text')  # スプレッドシートのカラム名は 'text'
         
-        # 選択肢 (option_1, option_2, ...) を動的に収集
+        # 🔽 修正: 選択肢とその画像を同時に収集
         self.options = []
-        for i in range(1, 10): # option_9 まで自動で探す
-            opt = record.get(f'option_{i}')
-            # スプレッドシートのセルが空でないことを確認
-            if opt is not None and str(opt).strip() != "":
-                self.options.append(str(opt))
-            else:
-                break # option_N が途切れたら終了
-        
-        # 🔽 新規追加: 画像URL (option_1_image, option_2_image, ...) を動的に収集
         self.option_images = []
-        for i in range(1, len(self.options) + 1):
-            img_url = record.get(f'option_{i}_image')
-            # 画像URLが設定されていない場合は None
-            if img_url and str(img_url).strip() != "":
-                self.option_images.append(str(img_url).strip())
+        
+        for i in range(1, 10):  # option_9 まで自動で探す
+            opt_text = record.get(f'option_{i}')
+            opt_image = record.get(f'option_{i}_image')
+            
+            # テキストまたは画像のいずれかが存在する場合に選択肢として追加
+            has_text = opt_text is not None and str(opt_text).strip() != ""
+            has_image = opt_image is not None and str(opt_image).strip() != ""
+            
+            if has_text or has_image:
+                # テキストが空の場合はデフォルトのラベルを設定
+                if has_text:
+                    self.options.append(str(opt_text))
+                else:
+                    # 画像のみの場合、ラベルマップに対応した文字を使用
+                    label_map = {1: "A", 2: "B", 3: "C", 4: "D", 5: "E", 6: "F", 7: "G", 8: "H", 9: "I"}
+                    self.options.append(f"選択肢{label_map.get(i, str(i))}")
+                
+                # 画像URLを追加（なければNone）
+                if has_image:
+                    self.option_images.append(str(opt_image).strip())
+                else:
+                    self.option_images.append(None)
             else:
-                self.option_images.append(None)
+                # テキストも画像もない場合は終了
+                break
         
         # 🔽 新規追加: 音声URL
         self.audio_url = record.get('audio_url')
@@ -55,7 +68,7 @@ class QuizData:
         
         # 正解番号（correct_answer）が選択肢の範囲内かチェック
         try:
-            correct_index = int(self.correct_answer) - 1 # 1始まりを0始まりに
+            correct_index = int(self.correct_answer) - 1  # 1始まりを0始まりに
             if not (0 <= correct_index < len(self.options)):
                 raise ValueError(f"正解番号 '{self.correct_answer}' が選択肢の範囲外です (ID: {self.question_id})")
         except ValueError:
